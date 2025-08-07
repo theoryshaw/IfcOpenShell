@@ -629,8 +629,44 @@ class FinishEditingDoor(bpy.types.Operator, tool.Ifc.Operator):
             tool.Model.mark_thumbnail_for_update(element_type)
 
         pset = tool.Pset.get_element_pset(element, "BBIM_Door")
-        door_data = tool.Ifc.get().createIfcText(json.dumps(door_data, default=list))
-        ifcopenshell.api.pset.edit_pset(tool.Ifc.get(), pset=pset, properties={"Data": door_data})
+        door_data_str = tool.Ifc.get().createIfcText(json.dumps(door_data, default=list))
+        ifcopenshell.api.pset.edit_pset(tool.Ifc.get(), pset=pset, properties={"Data": door_data_str})
+
+        if inverted_pset := ifcopenshell.util.element.get_pset(element, "BBIM_InvertedSwingType", "Data"):
+            inverted_data = json.loads(inverted_pset)
+            if "inverted_swing_type" in inverted_data and (inverted_type := tool.Ifc.get_entity_by_id(int(inverted_data["inverted_swing_type"]))):
+                # object has mirrored repr, update it as well
+                self.copy_door_params(door_data, inverted_type)
+
+    def copy_door_params(self, from_data, to_elem):
+        if "RIGHT" in from_data["door_type"]:
+            from_data["door_type"] = from_data["door_type"].replace("RIGHT", "LEFT")
+        else:
+            from_data["door_type"] = from_data["door_type"].replace("LEFT", "RIGHT")
+
+        to_pset = tool.Pset.get_element_pset(to_elem, "BBIM_Door")
+        ifcopenshell.api.pset.edit_pset(tool.Ifc.get(), pset=to_pset, properties={"Data": json.dumps(from_data)})
+
+        # reload door representation
+        from_data.update(from_data.pop("lining_properties"))
+        from_data.update(from_data.pop("panel_properties"))
+        from_data.update(tool.Model.get_constituents_props_data(to_elem))
+
+        to_obj = tool.Ifc.get_object(to_elem)
+        props = tool.Model.get_door_props(to_obj)
+
+        # we need this workaround because set_props_kwargs_from_ifc_data will
+        # "update" the mesh of the active object, which will switch its representation
+        prev_active = bpy.context.view_layer.objects.active
+        bpy.context.view_layer.objects.active = to_obj
+
+        props.set_props_kwargs_from_ifc_data(from_data)
+
+        bpy.context.view_layer.objects.active = prev_active
+
+        update_door_modifier_representation(to_obj)
+        tool.Model.mark_thumbnail_for_update(to_elem)
+
 
     def _execute(self, context: bpy.types.Context) -> set[str]:  # noqa: ARG002
         for obj in tool.Blender.get_selected_objects():

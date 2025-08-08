@@ -31,6 +31,7 @@ import numpy as np
 import numpy.typing as npt
 from ifcopenshell import entity_instance
 import ifcopenshell.api
+import ifcopenshell.api.pset
 import ifcopenshell.util.element
 import bonsai.core.tool
 import bonsai.tool as tool
@@ -1124,6 +1125,20 @@ class Blender(bonsai.core.tool.Blender):
         @classmethod
         def is_stair(cls, element: entity_instance) -> bool:
             return tool.Pset.get_element_pset(element, "BBIM_Stair")
+        
+        @classmethod
+        def has_mirrored_type(cls, element: entity_instance, inherit: bool = True) -> entity_instance | None:
+            pset = ifcopenshell.util.element.get_pset(element, "BBIM_MirroredType", "Data", should_inherit=inherit)
+            if pset and (parsed := json.loads(pset)) and "mirrored_type" in parsed:
+                return tool.Ifc.get_entity_by_id(int(parsed["mirrored_type"]))
+            return None
+        
+        @classmethod
+        def set_mirrored_type(cls, element: entity_instance, mirrored_type: entity_instance):
+            pset = tool.Pset.get_element_pset(element, "BBIM_MirroredType")
+            if not pset:
+                pset = ifcopenshell.api.pset.add_pset(tool.Ifc.get(), element, "BBIM_MirroredType")
+            ifcopenshell.api.pset.edit_pset(tool.Ifc.get(), pset, properties={ "Data": json.dumps({ "mirrored_type": mirrored_type.id() }) })
 
         @classmethod
         def is_editing_railing_path(cls, obj: bpy.types.Object):

@@ -99,6 +99,14 @@ class Root(bonsai.core.tool.Root):
                     exclude_callback=exclude_callback,
                     copied_entities=copied_entities,
                 )
+
+            for representation in source.Representation.Representations:
+                for item in representation.Items:
+                    if item.StyledByItem:
+                        for styled_by in item.StyledByItem:
+                            new_styled_by = ifcopenshell.util.element.copy(tool.Ifc.get(), styled_by)
+                            new_styled_by.Item = copied_entities[styled_by.Item.id()]
+                            copied_entities[styled_by.id()] = new_styled_by
                         
         elif dest.is_a("IfcTypeProduct"):
             if not source.RepresentationMaps:
@@ -122,6 +130,13 @@ class Root(bonsai.core.tool.Root):
                         exclude_callback=exclude_callback,
                         copied_entities=copied_entities,
                     )
+                
+                for item in map.MappedRepresentation.Items:
+                    if item.StyledByItem:
+                        for styled_by in item.StyledByItem:
+                            new_styled_by = ifcopenshell.util.element.copy(tool.Ifc.get(), styled_by)
+                            new_styled_by.Item = copied_entities[styled_by.Item.id()]
+                            copied_entities[styled_by.id()] = new_styled_by
 
                 new_representation_maps.append(new_map)
             dest.RepresentationMaps = new_representation_maps

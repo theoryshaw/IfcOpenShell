@@ -660,7 +660,6 @@ class FinishEditingDoor(bpy.types.Operator, tool.Ifc.Operator):
         update_door_modifier_representation(to_obj)
         tool.Model.mark_thumbnail_for_update(to_elem)
 
-
     def _execute(self, context):
         for obj in tool.Blender.get_selected_objects():
             self.finish_editing_door_on_object(obj)

@@ -446,7 +446,7 @@ class FlipFill(bpy.types.Operator, tool.Ifc.Operator):
             filled_element = filled_opening.VoidsElements[0].RelatingBuildingElement
             filled_object = tool.Ifc.get_object(filled_element)
 
-            if filled_element.is_a() in [ "IfcWall", "IfcWallStandardCase" ]:
+            if filled_element.is_a() in ["IfcWall", "IfcWallStandardCase"]:
                 # if the filled element is a wall, move the filling in such a way
                 # that it will have the same relative position, but to the other
                 # side of the wall
@@ -457,7 +457,7 @@ class FlipFill(bpy.types.Operator, tool.Ifc.Operator):
                 layers = tool.Model.get_material_layer_parameters(filled_element)
                 axes = tool.Model.get_wall_axis(filled_object, layers=layers)
 
-                center_axis = [ (axes["base"][0] + axes["side"][0]) * 0.5, (axes["base"][1] + axes["side"][1]) * 0.5 ]
+                center_axis = [(axes["base"][0] + axes["side"][0]) * 0.5, (axes["base"][1] + axes["side"][1]) * 0.5]
 
                 original_pos = obj.matrix_world.translation
                 bb = tool.Blender.get_object_bounding_box(obj)
@@ -474,9 +474,9 @@ class FlipFill(bpy.types.Operator, tool.Ifc.Operator):
 
                 obj.matrix_world.translation = mirrored_point
                 bonsai.core.geometry.edit_object_placement(tool.Ifc, tool.Geometry, tool.Surveyor, obj=obj)
-            
+
             tool.Geometry.flip_object(obj, "XY")
-                
+
         return {"FINISHED"}
 
 

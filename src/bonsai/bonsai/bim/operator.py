@@ -236,6 +236,9 @@ class SelectIfcFile(bpy.types.Operator, IFCFileSelector, ImportHelper):
         return ImportHelper.invoke(self, context, event)
 
 
+# TODO: Unused operator.
+# Is there a need for this or 'DIR_PATH' propety subtype does almost the same,
+# but also has alt+click?
 class SelectDir(bpy.types.Operator, ImportHelper):
     bl_idname = "bim.select_dir"
     bl_label = "Select Directory"
@@ -1030,8 +1033,14 @@ class BIM_OT_enum_property_search(bpy.types.Operator):
     prop_name: bpy.props.StringProperty()
     should_click_ok: bpy.props.BoolProperty(default=False)
     original_operator_path: bpy.props.StringProperty(name="Original Operator Path", default="", options={"SKIP_SAVE"})
+    enable_relating_type_suggestions: bpy.props.BoolProperty(default=True)
 
     identifiers: list[str]
+
+    if TYPE_CHECKING:
+        collection_names: bpy.types.bpy_prop_collection_idprop[StrProperty]
+        collection_identifiers: bpy.types.bpy_prop_collection_idprop[StrProperty]
+        collection_predefined_types: bpy.types.bpy_prop_collection_idprop[StrProperty]
 
     def invoke(self, context, event):
         self.clear_collections()
@@ -1094,6 +1103,38 @@ class BIM_OT_enum_property_search(bpy.types.Operator):
                             name=f"{key} > {name if name else predefined_type }",
                             predefined_type=predefined_type,
                         )
+
+        if self.enable_relating_type_suggestions:
+            self.add_relating_type_suggestions()
+
+    def add_relating_type_suggestions(self) -> None:
+        ifc_file = tool.Ifc.get()
+        if not ifc_file:
+            return
+
+        type_elements = []
+        for identifier in self.identifiers:
+            element = ifc_file.by_id(int(identifier))
+            if element and element.is_a().endswith("Type"):
+                type_elements.append(element)
+
+        for element in type_elements:
+            base_name = element.Name or "Unnamed"
+            element_step_id = str(element.id())
+
+            attributes = []
+            for attr_name in ["Description", "PredefinedType", "ElementType", "ObjectType"]:
+                value = getattr(element, attr_name, None)
+                if value:
+                    attributes.append(value)
+
+            if attributes:
+                concatenated_name = f"{base_name} > {' > '.join(attributes)}"
+                self.add_item(
+                    identifier=element_step_id,
+                    name=concatenated_name,
+                    predefined_type=element.PredefinedType or "",
+                )
 
 
 class BIM_OT_select_entity(bpy.types.Operator):

@@ -220,7 +220,7 @@ class Bsdd(bonsai.core.tool.Bsdd):
                     prop.dictionary_name = dictionary_name
                     prop.dictionary_namespace_uri = dictionary_namespace_uri
 
-        total_results = response.get("count", response.get("classesCount"))
+        total_results = len(bprops.classifications)
         # For now, hard limit at 1000 results because any more and Blender
         # starts getting slow and they really should filter better
         if offset < 1000 and should_paginate and total_results == limit:
@@ -306,7 +306,7 @@ class Bsdd(bonsai.core.tool.Bsdd):
             new.uri = bsdd_prop["uri"]
 
     @classmethod
-    def import_properties(cls, obj, obj_type, keyword) -> None:
+    def import_properties(cls, obj: str, obj_type: tool.Ifc.OBJECT_TYPE, keyword: str) -> None:
         props = cls.get_bsdd_props()
         props.properties.clear()
         pprops = tool.Pset.get_pset_props(obj, obj_type)
@@ -328,6 +328,7 @@ class Bsdd(bonsai.core.tool.Bsdd):
         data_type_map = {
             "String": "string",
             "Real": "float",
+            "Integer": "integer",
             "Boolean": "boolean",
         }
         imported_props = set()
@@ -472,3 +473,11 @@ class Bsdd(bonsai.core.tool.Bsdd):
             data: Bsdd.BSDDJsonData = json.loads(ref.Name)
             results.append((ref.Location, data["name"], data["description"]))
         return results
+
+    @classmethod
+    def set_library_active(cls, uri: str, state: bool) -> None:
+        for dictionary in cls.get_bsdd_props().dictionaries:
+            if dictionary.uri == uri:
+                dictionary.is_active = state
+                return
+        raise ValueError(f"URI '{uri}' could not be found in dictionaries!")

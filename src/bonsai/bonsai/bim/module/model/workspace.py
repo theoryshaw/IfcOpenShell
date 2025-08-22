@@ -663,6 +663,8 @@ class CreateObjectUI:
             text="",
             button_kwargs={"emboss": False},
             emboss=True,
+            enable_relating_type_suggestions=True,
+            search_threshold=0,
         )
         # Limit width because names can get really long.
         row_.ui_units_x = 10.0

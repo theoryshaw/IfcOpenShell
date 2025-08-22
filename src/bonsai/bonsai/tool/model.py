@@ -30,6 +30,7 @@ import ifcopenshell.api.geometry
 import ifcopenshell.api.grid
 import ifcopenshell.api.pset
 import ifcopenshell.geom
+import ifcopenshell.ifcopenshell_wrapper as W
 import ifcopenshell.util.element
 import ifcopenshell.util.placement
 import ifcopenshell.util.representation
@@ -781,7 +782,9 @@ class Model(bonsai.core.tool.Model):
                 return "PROFILE"
 
     @classmethod
-    def get_wall_axis(cls, obj: bpy.types.Object, layers: Optional[dict[str, Any]] = None) -> dict[str, list[Vector]]:
+    def get_wall_axis(
+        cls, obj: bpy.types.Object, layers: Optional[MaterialLayerParameters] = None
+    ) -> dict[str, list[Vector]]:
         """Each item of a resulting dictionary is a list of 2 2D vectors."""
         x_values = [v[0] for v in obj.bound_box]
         min_x = min(x_values)
@@ -1897,6 +1900,7 @@ class Model(bonsai.core.tool.Model):
         polygons = {}
         for curve in curves:
             geometry = ifcopenshell.geom.create_shape(settings, curve)
+            assert isinstance(geometry, W.Triangulation)
             v = ifcopenshell.util.shape.get_vertices(geometry, is_2d=True)
             v = np.round(v, 4)  # Round to nearest 0.1mm, otherwise things like circles don't polygonise reliably
             edges = ifcopenshell.util.shape.get_edges(geometry)

@@ -59,6 +59,7 @@ class IfcSchema:
             return
         for path in tool.Blender.get_data_dir_paths("pset", "*.ifc"):
             self.psetqto.templates.append(ifcopenshell.open(path))
+        tool.Project.load_project_pset_templates()
 
 
 # TODO: do we really need to load it on module import?
@@ -66,6 +67,6 @@ class IfcSchema:
 ifc = IfcSchema()
 
 
-def reload(schema_identifier):
+def reload(schema_identifier: str) -> None:
     global ifc
     ifc = IfcSchema(schema_identifier)

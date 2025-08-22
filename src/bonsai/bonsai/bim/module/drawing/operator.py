@@ -886,7 +886,7 @@ class CreateDrawing(bpy.types.Operator):
         files = {bim_props.ifc_file: tool.Ifc.get()}
 
         props = tool.Project.get_project_props()
-        for link in props.get_loaded_links():
+        for link in props.get_loaded_links_for_drawings():
             files[link.name] = self.get_linked_file(link)
 
         target_view = ifcopenshell.util.element.get_psets(self.camera_element)["EPset_Drawing"]["TargetView"]
@@ -1308,7 +1308,7 @@ class CreateDrawing(bpy.types.Operator):
             return tool.Ifc.get().by_guid(guid)
         except RuntimeError:
             props = tool.Project.get_project_props()
-            for link in props.get_loaded_links():
+            for link in props.get_loaded_links_for_drawings():
                 ifc_file = self.get_linked_file(link)
                 try:
                     return ifc_file.by_guid(guid)
@@ -1324,7 +1324,7 @@ class CreateDrawing(bpy.types.Operator):
             return tool.Ifc.get().by_id(step_id)
         except RuntimeError:
             props = tool.Project.get_project_props()
-            for link in props.get_loaded_links():
+            for link in props.get_loaded_links_for_drawings():
                 ifc_file = self.get_linked_file(link)
                 try:
                     return ifc_file.by_id(step_id)
@@ -2157,6 +2157,8 @@ class ActivateModel(bpy.types.Operator):
     )
 
     def execute(self, context):
+        start_time = time.time()
+
         dprops = tool.Drawing.get_document_props()
         dprops.active_drawing_id = 0
         model_props = tool.Model.get_model_props()
@@ -2183,26 +2185,55 @@ class ActivateModel(bpy.types.Operator):
 
         if not bpy.app.background:
             with context.temp_override(**tool.Blender.get_viewport_context()):
-                bpy.ops.object.hide_view_clear()
+                bpy.ops.object.hide_view_clear(select=False)
                 bpy.ops.bim.activate_status_filters(only_if_enabled=True)
 
-        for obj in context.visible_objects:
-            element = tool.Ifc.get_entity(obj)
-            if not element:
-                continue
-            model = ifcopenshell.util.representation.get_representation(element, "Model", "Body", "MODEL_VIEW")
-            if model:
+        elements = {e for obj in context.visible_objects if (e := tool.Ifc.get_entity(obj))}
+
+        def refine_elements(
+            elements_mutable: set[ifcopenshell.entity_instance],
+        ) -> dict[ifcopenshell.entity_instance, tuple[ifcopenshell.entity_instance, bpy.types.Object]]:
+            """
+            :return: element -> (representation, obj)
+            """
+            # TODO: in the future reimport_element_representations should have an option
+            # not recalculate elements completely, but get the from cache, to speed up the process further.
+            refined_elements: dict[
+                ifcopenshell.entity_instance, tuple[ifcopenshell.entity_instance, bpy.types.Object]
+            ] = {}
+            elements = elements_mutable
+            while elements:
+                element = elements.pop()
+                model = ifcopenshell.util.representation.get_representation(element, "Model", "Body", "MODEL_VIEW")
+                if not model:
+                    continue
+                assert isinstance(obj := tool.Ifc.get_object(element), bpy.types.Object)
                 current_representation = tool.Geometry.get_active_representation(obj)
-                if current_representation != model:
-                    bonsai.core.geometry.switch_representation(
-                        tool.Ifc,
-                        tool.Geometry,
-                        obj=obj,
-                        representation=model,
-                        should_reload=False,
-                        is_global=True,
-                        should_sync_changes_first=True,
-                    )
+                if current_representation == model:
+                    continue
+
+                # reimport_element_representations automatically reloads all elements sharing representation.
+                # So we should avoid reloading same elements twice.
+                resolved_model = ifcopenshell.util.representation.resolve_representation(model)
+                elements_sharing_representation = ifcopenshell.util.element.get_elements_by_representation(
+                    ifc_file, resolved_model
+                )
+
+                refined_elements[element] = (model, obj)
+                elements = elements - elements_sharing_representation
+            return refined_elements
+
+        refined_elements = refine_elements(elements)
+        for _, (model, obj) in refined_elements.items():
+            bonsai.core.geometry.switch_representation(
+                tool.Ifc,
+                tool.Geometry,
+                obj=obj,
+                representation=model,
+                should_reload=False,
+                is_global=True,
+                should_sync_changes_first=True,
+            )
 
         # restore visibility after hide_view_clear()
         for obj, hide_status in visibility_status.items():
@@ -2210,6 +2241,11 @@ class ActivateModel(bpy.types.Operator):
 
         tool.Blender.update_viewport()
         bonsai.bim.handler.refresh_ui_data()
+
+        operator_time = time.time() - start_time
+        if operator_time > 10:
+            self.report({"INFO"}, f"{self.bl_label} was finished in {operator_time:.2f} seconds.")
+
         return {"FINISHED"}
 
 
@@ -3699,7 +3735,7 @@ class OpenDocumentationWebUi(bpy.types.Operator):
     bl_description = "Open the documentation web UI page"
 
     def execute(self, context):
-        if not context.scene.WebProperties.is_connected:
+        if not tool.Web.get_web_props().is_connected:
             bpy.ops.bim.connect_websocket_server(page="documentation")
         else:
             bpy.ops.bim.open_web_browser(page="documentation")

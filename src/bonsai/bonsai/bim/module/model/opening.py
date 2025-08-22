@@ -104,7 +104,7 @@ class FilledOpeningGenerator:
                 else:
                     new_matrix.translation.x = point_on_side_axis.x
                     new_matrix.translation.y = point_on_side_axis.y
-                    new_matrix = new_matrix @ Euler((0, 0, radians(180.0))).to_matrix().to_4x4()
+                    new_matrix = new_matrix @ Matrix.Rotation(radians(180.0), 4, "Z")
 
                 if should_set_z_level:
                     if filling.is_a("IfcDoor"):
@@ -476,6 +476,8 @@ class FlipFill(bpy.types.Operator, tool.Ifc.Operator):
                 bonsai.core.geometry.edit_object_placement(tool.Ifc, tool.Geometry, tool.Surveyor, obj=obj)
 
             tool.Geometry.flip_object(obj, "XY")
+            ifcopenshell.api.geometry.edit_object_placement(tool.Ifc.get(), filled_opening, obj.matrix_world)
+            tool.Geometry.reload_representation(filled_object)
 
         return {"FINISHED"}
 

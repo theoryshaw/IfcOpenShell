@@ -1650,7 +1650,7 @@ class Sequence(bonsai.core.tool.Sequence):
     def generate_gantt_browser_chart(
         cls, task_json: list[dict[str, Any]], work_schedule: ifcopenshell.entity_instance
     ) -> None:
-        if not bpy.context.scene.WebProperties.is_connected:
+        if not tool.Web.get_web_props().is_connected:
             bpy.ops.bim.connect_websocket_server(page="sequencing")
         gantt_data = {"tasks": task_json, "work_schedule": work_schedule.get_info(recursive=True)}
         tool.Web.send_webui_data(data=gantt_data, data_key="gantt_data", event="gantt_data")
@@ -1840,15 +1840,29 @@ class Sequence(bonsai.core.tool.Sequence):
             return isodate.datetime_isoformat(datetime_)
         return isodate.date_isoformat(datetime_)
 
+    ElementStatus = Literal["NEW", "EXISTING", "DEMOLISH", "TEMPORARY", "OTHER", "NOTKNOWN", "UNSET"]
+    ElementStatusUI = Union[ElementStatus, Literal["No Status"], str]
+    """Also allows UserDefinedStatus from EPset."""
+
+    ELEMENT_STATUSES = ("NEW", "EXISTING", "DEMOLISH", "TEMPORARY", "OTHER", "NOTKNOWN", "UNSET")
+
+    @classmethod
+    def get_status_query(cls, status: ElementStatusUI) -> str:
+        if status == "No Status":
+            return f"IfcProduct, /Pset_.*Common/.Status=NULL, EPset_Status.Status=NULL"
+        return f"IfcProduct, /Pset_.*Common/.Status={status} + IfcProduct, EPset_Status.Status={status}"
+
+    @classmethod
+    def get_elements_by_status(cls, status: ElementStatusUI) -> set[ifcopenshell.entity_instance]:
+        query = cls.get_status_query(status)
+        return ifcopenshell.util.selector.filter_elements(tool.Ifc.get(), query)
+
     @classmethod
     def set_visibility_by_status(cls, visible_statuses: set[str]) -> None:
         assert bpy.context.view_layer
         query = []
         for name in visible_statuses:
-            if name == "No Status":
-                q = f"IfcProduct, /Pset_.*Common/.Status=NULL, EPset_Status.Status=NULL"
-            else:
-                q = f"IfcProduct, /Pset_.*Common/.Status={name} + IfcProduct, EPset_Status.Status={name}"
+            q = cls.get_status_query(name)
             query.append(q)
         query = " + ".join(query)
 

@@ -1336,9 +1336,6 @@ class Model(bonsai.core.tool.Model):
                 tool.Geometry,
                 obj=obj,
                 representation=active_repr,
-                should_reload=True,
-                is_global=False,
-                should_sync_changes_first=False,
             )
 
     @classmethod

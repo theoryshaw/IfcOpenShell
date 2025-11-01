@@ -428,9 +428,7 @@ class SwitchRepresentation(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER", "UNDO"}
     obj: bpy.props.StringProperty()
     ifc_definition_id: bpy.props.IntProperty()
-    should_reload: bpy.props.BoolProperty()
     disable_opening_subtractions: bpy.props.BoolProperty()
-    should_switch_all_meshes: bpy.props.BoolProperty()
 
     @classmethod
     def poll(cls, context):
@@ -466,9 +464,6 @@ class SwitchRepresentation(bpy.types.Operator, tool.Ifc.Operator):
                 tool.Geometry,
                 obj=obj,
                 representation=representation,
-                should_reload=self.should_reload,
-                is_global=self.should_switch_all_meshes,
-                should_sync_changes_first=True,
             )
 
 
@@ -722,9 +717,6 @@ class UpdateParametricRepresentation(bpy.types.Operator):
             tool.Geometry,
             obj=obj,
             representation=tool.Ifc.get().by_id(props.ifc_definition_id),
-            should_reload=True,
-            is_global=True,
-            should_sync_changes_first=False,
         )
         if show_representation_parameters:
             core.get_representation_ifc_parameters(tool.Geometry, obj=obj)
@@ -867,6 +859,10 @@ class OverrideDelete(bpy.types.Operator):
         objects_to_remove = context.selected_objects
 
         self.process_arrays(context)
+
+        # Track aggregates before deleting their parts
+        aggregates_to_check = self.track_aggregates(objects_to_remove)
+
         clear_active_object = True
 
         for i, obj in enumerate(objects_to_remove, 1):
@@ -891,12 +887,27 @@ class OverrideDelete(bpy.types.Operator):
                     continue
                 if ifcopenshell.util.element.get_pset(element, "BBIM_Array"):
                     self.report({"INFO"}, "Elements that are part of an array cannot be deleted.")
-                    return {"FINISHED"}
+                    continue
+                if element.is_a("IfcGridAxis"):
+                    # Deleting the last W axis is OK
+                    if ((grid := element.PartOfU) and len(grid[0].UAxes) == 1) or (
+                        (grid := element.PartOfV) and len(grid[0].VAxes) == 1
+                    ):
+                        self.report(
+                            {"INFO"}, "The last grid axis of a grid cannot be deleted. Delete the grid instead."
+                        )
+                        continue
+                if tool.Drawing.is_auto_annotation(element):
+                    self.report({"INFO"}, "References cannot be deleted. Exclude the referenced element instead.")
+                    continue
                 tool.Geometry.delete_ifc_object(obj)
             elif tool.Geometry.is_representation_item(obj):
                 tool.Geometry.delete_ifc_item(obj)
             else:
                 bpy.data.objects.remove(obj)
+
+        # Delete empty aggregates after deleting their parts
+        self.delete_empty_aggregates(aggregates_to_check)
 
         for opening in tool.Model.get_model_props().openings:
             if opening.obj is not None and not tool.Ifc.get_entity(opening.obj):
@@ -929,6 +940,49 @@ class OverrideDelete(bpy.types.Operator):
     def commit(self, data):
         data["old_file"].redo()
         tool.Ifc.set(data["new_file"])
+
+    def track_aggregates(self, objects_to_remove):
+        """Track aggregates that contain objects being deleted"""
+        aggregates_to_check = set()
+        for obj in objects_to_remove:
+            if not tool.Blender.is_valid_data_block(obj):
+                continue
+            element = tool.Ifc.get_entity(obj)
+            if not element:
+                continue
+            aggregate = ifcopenshell.util.element.get_aggregate(element)
+            if aggregate:
+                aggregates_to_check.add(aggregate)
+        return aggregates_to_check
+
+    def delete_empty_aggregates(self, aggregates_to_check):
+        """Delete aggregates that now have no parts"""
+        deleted_aggregates = []
+        for aggregate in aggregates_to_check:
+            # Check if aggregate still exists (might have been deleted already)
+            try:
+                aggregate.id()
+            except:
+                continue
+
+            related_objects = ifcopenshell.util.element.get_parts(aggregate)
+            if len(related_objects) == 0:
+                aggregate_name = aggregate.Name or f"{aggregate.is_a()} #{aggregate.id()}"
+                deleted_aggregates.append(aggregate_name)
+
+                aggregate_obj = tool.Ifc.get_object(aggregate)
+                if aggregate_obj and tool.Blender.is_valid_data_block(aggregate_obj):
+                    tool.Geometry.delete_ifc_object(aggregate_obj)
+
+        # Show info message if aggregates were deleted
+        if deleted_aggregates:
+            if len(deleted_aggregates) == 1:
+                self.report(
+                    {"INFO"}, f"Aggregate '{deleted_aggregates[0]}' was deleted because it had no remaining parts"
+                )
+            else:
+                aggregate_list = ", ".join(f"'{name}'" for name in deleted_aggregates)
+                self.report({"INFO"}, f"Aggregates {aggregate_list} were deleted because they had no remaining parts")
 
     def process_arrays(self, context: bpy.types.Context) -> None:
         ifc_file = tool.Ifc.get()
@@ -1428,7 +1482,13 @@ class RefreshLinkedAggregate(bpy.types.Operator, tool.Ifc.Operator):
             pset = ifcopenshell.util.element.get_pset(element, self.pset_name)
             index = pset["Index"]
             annotations = get_assignments(element)
-            original_data[group][index] = {"Name": str(pset["Aggregate_Index"]), "Assignment": annotations}
+            container = ifcopenshell.util.element.get_container(element)
+            original_data[group][index] = {
+                "Name": pset["Name"],
+                "Aggregate_Index": pset["Aggregate_Index"],
+                "Assignment": annotations,
+                "Container": container,
+            }
 
             parts = ifcopenshell.util.element.get_parts(element)
             if parts:
@@ -1471,13 +1531,22 @@ class RefreshLinkedAggregate(bpy.types.Operator, tool.Ifc.Operator):
             index = pset["Index"]
 
             if index == 0:
-                obj.name = pset["Name"]
+                obj.name = pset["Name"] + "_" + str(original_data[group][index]["Aggregate_Index"])
                 ifc_file = tool.Ifc.get()
                 ifcopenshell.api.pset.edit_pset(
                     ifc_file,
                     ifc_file.by_id(pset["id"]),
-                    properties={"Aggregate_Index": int(original_data[group][index]["Name"])},
+                    properties={"Aggregate_Index": int(original_data[group][index]["Aggregate_Index"])},
                 )
+                bonsai.core.spatial.assign_container(
+                    tool.Ifc,
+                    tool.Collector,
+                    tool.Spatial,
+                    container=original_data[group][index]["Container"],
+                    element_obj=obj,
+                )
+                for part in ifcopenshell.util.element.get_parts(tool.Ifc.get_entity(obj)):
+                    tool.Collector.assign(tool.Ifc.get_object(part))
                 assignments = original_data[group][index]["Assignment"]
                 if assignments:
                     assign_to_annotations(obj, assignments)
@@ -1890,9 +1959,6 @@ class OverrideJoin(bpy.types.Operator, tool.Ifc.Operator):
                 tool.Geometry,
                 obj=self.target,
                 representation=representation,
-                should_reload=True,
-                is_global=True,
-                should_sync_changes_first=False,
                 apply_openings=True,
             )
 
@@ -2990,6 +3056,7 @@ class ImportRepresentationItems(bpy.types.Operator, tool.Ifc.Operator):
             item_mesh = bpy.data.meshes.new("tmp")
             tool.Ifc.link(item, item_mesh)
             item_obj = bpy.data.objects.new("tmp", item_mesh)
+            tool.Geometry.lock_scale(item_obj)
             tool.Geometry.name_item_object(item_obj, item)
             item_obj.matrix_world = obj.matrix_world
             bpy.context.collection.objects.link(item_obj)

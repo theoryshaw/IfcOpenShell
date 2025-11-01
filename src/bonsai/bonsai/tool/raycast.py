@@ -19,6 +19,7 @@
 import bmesh
 import bpy
 import copy
+import numpy as np
 from bpy_extras import view3d_utils
 import bonsai.core.tool
 import bonsai.tool as tool
@@ -134,6 +135,36 @@ class Raycast(bonsai.core.tool.Raycast):
             return False
 
     @classmethod
+    def object_is_visible_in_clipping_plane(cls, obj):
+        is_visible = True
+        if obj.type == "EMPTY":
+            vertex = obj.location
+            is_visible = cls.point_is_visible_in_clipping_plane(vertex)
+
+        if obj.type == "CURVE":
+            obj = bpy.data.objects.new("new_object", obj.to_mesh().copy())
+
+        if obj.type == "MESH":
+            for v in obj.data.vertices:
+                vertex = obj.matrix_world @ v.co
+                is_visible = cls.point_is_visible_in_clipping_plane(vertex)
+                if is_visible:
+                    break
+        return is_visible
+
+    @classmethod
+    def point_is_visible_in_clipping_plane(cls, vertex):
+        normals = tool.Project.get_clipping_planes_normals()
+        if not normals:
+            return True
+        for normal in normals:
+            t = (vertex - normal[0]).normalized()
+            result = normal[1].dot(t)
+            if result < 0:
+                return False
+        return True
+
+    @classmethod
     def get_viewport_ray_data(
         cls, context: bpy.types.Context, event: bpy.types.Event, mouse_pos: tuple[int, int] = None
     ):
@@ -213,10 +244,7 @@ class Raycast(bonsai.core.tool.Raycast):
         ray_origin, ray_target, ray_direction = cls.get_viewport_ray_data(context, event)
         points = []
 
-        # Makes the snapping point more or less sticky than others
-        # It changes the distance and affects how the snapping point are sorted
-        # We multiply by the increment snap which is based on the viewport zoom
-        snap_threshold = rv3d.view_distance / 100
+        snap_threshold = cls.calculate_snap_threshold(rv3d.view_distance)
 
         try:
             loc = view3d_utils.region_2d_to_location_3d(region, rv3d, mouse_pos, ray_direction)
@@ -309,7 +337,7 @@ class Raycast(bonsai.core.tool.Raycast):
         rv3d = context.region_data
         mouse_pos = event.mouse_region_x, event.mouse_region_y
         ray_origin, ray_target, ray_direction = cls.get_viewport_ray_data(context, event)
-        snap_threshold = rv3d.view_distance / 100
+        snap_threshold = cls.calculate_snap_threshold(rv3d.view_distance)
 
         try:
             loc = view3d_utils.region_2d_to_location_3d(region, rv3d, mouse_pos, ray_direction)
@@ -387,7 +415,7 @@ class Raycast(bonsai.core.tool.Raycast):
         rv3d = context.region_data
         mouse_pos = event.mouse_region_x, event.mouse_region_y
         ray_origin, ray_target, ray_direction = cls.get_viewport_ray_data(context, event)
-        snap_threshold = rv3d.view_distance / 100
+        snap_threshold = cls.calculate_snap_threshold(rv3d.view_distance)
 
         try:
             loc = view3d_utils.region_2d_to_location_3d(region, rv3d, mouse_pos, ray_direction)
@@ -423,7 +451,9 @@ class Raycast(bonsai.core.tool.Raycast):
         for obj, bbox_2d in objs_2d_bbox:
             if bbox_2d:
                 if tool.Raycast.intersect_mouse_2d_bounding_box(mouse_pos, bbox_2d):
-                    objs_to_raycast.append(obj)
+                    if tool.Raycast.object_is_visible_in_clipping_plane(obj):
+                        objs_to_raycast.append(obj)
+
         return objs_to_raycast
 
     @classmethod
@@ -500,3 +530,15 @@ class Raycast(bonsai.core.tool.Raycast):
 
         else:
             return None, None, None
+
+    @classmethod
+    def calculate_snap_threshold(cls, view_distance):
+        snap_threshold = view_distance / 100
+        area = tool.Blender.get_view3d_area()
+        lens = area.spaces.active.lens
+        xp = np.array([1, 10, 50])
+        fp = np.array([50, 10, 1])
+        value = np.interp(lens, xp, fp)
+        if lens < 50:
+            snap_threshold *= value
+        return snap_threshold

@@ -267,12 +267,6 @@ def update_titleblocks(self, context):
 def update_should_draw_decorations(self, context: bpy.types.Context) -> None:
     if self.should_draw_decorations:
         # TODO: design a proper text variable templating renderer
-        collection = tool.Blender.get_object_bim_props(context.scene.camera).collection
-        for obj in collection.objects:
-            element = tool.Ifc.get_entity(obj)
-            if not element or not tool.Drawing.is_annotation_object_type(element, ["TEXT", "TEXT_LEADER"]):
-                continue
-            tool.Drawing.update_text_value(obj)
         refresh_drawing_data()
         if bpy.app.background:
             return
@@ -471,6 +465,12 @@ class DocProperties(PropertyGroup):
             return None
         return tool.Ifc.get().by_id(drawing_id)
 
+    def get_active_target_view(self) -> Union[str, None]:
+        active_drawing = self.get_active_drawing()
+        if not active_drawing:
+            return None
+        return tool.Drawing.get_drawing_target_view(active_drawing)
+
 
 def update_width_height(self: "BIMCameraProperties", context: bpy.types.Context) -> None:
     self.update_camera_resolution()
@@ -497,6 +497,9 @@ class BIMCameraProperties(PropertyGroup):
         default="OPENCASCADE",
         name="Linework Mode",
         update=get_update_layer_callback("linework_mode", "LineworkMode"),
+    )
+    generate_material_layers: bpy.props.BoolProperty(
+        name="Generate Material Layers", description="Generate material layer linework in drawings", default=True
     )
     fill_mode: EnumProperty(
         items=[
@@ -709,16 +712,12 @@ class LiteralProps(PropertyGroup):
         return self.get("box_alignment", DEFAULT_BOX_ALIGNMENT)
 
     attributes: CollectionProperty(name="Attributes", type=Attribute)
-    # Current text value with evaluated expressions stored in `value`.
-    # The original (Literal) value stored in `attributes['Literal']`
-    # and can be accessed with `get_text()`
-    value: StringProperty(name="Value", default="TEXT")
     box_alignment: BoolVectorProperty(
         name="Box alignment", size=9, set=set_box_alignment, get=get_box_alignment, default=DEFAULT_BOX_ALIGNMENT
     )
     ifc_definition_id: IntProperty(name="IFC definition ID", default=0)
 
-    def get_literal_edited_data(self):
+    def get_literal_edited_data(self) -> dict[str, str]:
         text_data = {
             "CurrentValue": self.attributes["Literal"].string_value,
             "Literal": self.attributes["Literal"].string_value,
@@ -729,7 +728,7 @@ class LiteralProps(PropertyGroup):
     if TYPE_CHECKING:
         attributes: bpy.types.bpy_prop_collection_idprop[Attribute]
         value: str
-        box_alignment: str
+        box_alignment: tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool]
         ifc_definition_id: int
 
 
@@ -748,12 +747,50 @@ class BIMTextProperties(PropertyGroup):
         name="Font Size",
     )
     newline_at: IntProperty(name="Newline At")
+    reverse_list: BoolProperty(name="Reverse List", description="Reverses the order of any list.", default=False)
+    list_separator: StringProperty(  # pyright: ignore[reportRedeclaration]
+        name="List Separator",
+        description="Text used to separate lists. Uses a comma (, ) if empty.",
+    )
+    symbol: EnumProperty(  # pyright: ignore[reportRedeclaration]
+        name="Symbol",
+        description="Symbol from symbols.svg to use for this text.",
+        items=[(s, s, "") for s in ["NO SYMBOL", "CUSTOM SYMBOL"] + tool.Drawing.DEFAULT_SYMBOLS],
+        default="NO SYMBOL",
+    )
+    custom_symbol: StringProperty(  # pyright: ignore[reportRedeclaration]
+        name="Custom Symbol",
+        description="Non-default symbol to use for this text.",
+    )
 
     if TYPE_CHECKING:
         is_editing: bool
         literals: bpy.types.bpy_prop_collection_idprop[LiteralProps]
         font_size: str
         newline_at: int
+        reverse_list: bool
+        list_separator: str
+        symbol: Union[str, Literal["NO SYMBOL", "CUSTOM SYMBOL"]]
+        custom_symbol: str
+
+    def get_symbol(self) -> Union[str, None]:
+        if self.symbol == "NO SYMBOL":
+            return None
+        elif self.symbol == "CUSTOM SYMBOL":
+            return self.custom_symbol or None
+        else:
+            return self.symbol
+
+    def set_symbol(self, symbol: Union[str, None]):
+        if not symbol:
+            self.property_unset("symbol")
+            self.property_unset("custom_symbol")
+        elif symbol in tool.Drawing.DEFAULT_SYMBOLS:
+            self.symbol = symbol
+            self.property_unset("custom_symbol")
+        else:
+            self.symbol = "CUSTOM SYMBOL"
+            self.custom_symbol = symbol
 
     def get_text_edited_data(self) -> dict[str, Any]:
         """should be called only if `is_editing`
@@ -768,6 +805,9 @@ class BIMTextProperties(PropertyGroup):
             "Literals": literals_data,
             "FontSize": float(self.font_size),
             "Newline_At": int(self.newline_at),
+            "Symbol": self.get_symbol(),
+            "Reverse_List": self.reverse_list,
+            "List_Separator": self.list_separator or ", ",
         }
         return text_data
 
@@ -822,6 +862,19 @@ class BIMAnnotationProperties(PropertyGroup):
     )
     is_adding_type: bpy.props.BoolProperty(default=False)
     type_name: bpy.props.StringProperty(name="Name", default="TYPEX")
+    tag_rotation_mode: bpy.props.EnumProperty(
+        name="Tag Rotation Mode",
+        description="How to orient the tag relative to the tagged object",
+        items=[
+            ("NONE", "No Rotation", "Keep tag in default orientation"),
+            ("LOCAL_X", "Local X Axis", "Align tag with object's local X axis"),
+            ("LOCAL_Y", "Local Y Axis", "Align tag with object's local Y axis"),
+            ("LOCAL_Z", "Local Z Axis", "Align tag with object's local Z axis"),
+            ("CAMERA_Horizontal", "Camera Horizontal", "Align tag with camera X axis"),
+            ("CAMERA_Vertical", "Camera Vertical", "Align tag with camera Y axis"),
+        ],
+        default="NONE",
+    )
 
     if TYPE_CHECKING:
         object_type: str

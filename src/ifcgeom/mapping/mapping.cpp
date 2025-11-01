@@ -372,6 +372,18 @@ const IfcUtil::IfcBaseEntity* mapping::get_single_material_association(const Ifc
                     }
                 }
 #endif
+
+#ifdef SCHEMA_HAS_IfcMaterialConstituentSet
+                if (associated_material->as<IfcSchema::IfcMaterialConstituentSet>() && associated_material->as<IfcSchema::IfcMaterialConstituentSet>()->MaterialConstituents()) {
+                    IfcSchema::IfcMaterialConstituentSet* constituentset = associated_material->as<IfcSchema::IfcMaterialConstituentSet>();
+                    if (settings_.get<settings::LayersetFirst>().value ? constituentset->MaterialConstituents()->get()->size() >= 1 : constituentset->MaterialConstituents()->get()->size() == 1) {
+                        IfcSchema::IfcMaterialConstituent* constituent = (*constituentset->MaterialConstituents()->get()->begin());
+                        if (auto* m_ = constituent->Material()) {
+                            single_material = m_;
+                        }
+                    }
+                }
+#endif
             }
         }
     }
@@ -658,12 +670,23 @@ taxonomy::ptr mapping::map_impl(const IfcSchema::IfcSurfaceStyle* style) {
         if (rendering_style->TransmissionColour()) {
             // Not supported
         }
+#ifndef SCHEMA_IfcSurfaceStyleShading_HAS_Transparency
+        // ifc2x3
         if (rendering_style->Transparency()) {
             const double d = *rendering_style->Transparency();
             surface_style->transparency = d;
         }
+#endif
     }
-    
+
+#ifdef SCHEMA_IfcSurfaceStyleShading_HAS_Transparency
+    // ifc4 and onwards
+    if (shading->Transparency()) {
+        const double d = *shading->Transparency();
+        surface_style->transparency = d;
+    }
+#endif
+
     return surface_style;
 }
 

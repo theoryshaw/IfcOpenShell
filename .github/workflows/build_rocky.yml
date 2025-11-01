@@ -16,7 +16,7 @@ jobs:
                          bzip2 patch mesa-libGL-devel libffi-devel fontconfig-devel      \
                          sqlite-devel bzip2-devel zlib-devel openssl-devel xz-devel      \
                          readline-devel ncurses-devel libffi-devel libuuid-devel git-lfs \
-                         findutils xz
+                         findutils xz byacc
           python3 -m pip install typing_extensions
           git config --global --add safe.directory '*'
 
@@ -44,18 +44,30 @@ jobs:
 
       - name: Unpack Dependencies
         run: |
-          install_root=$(find ./build -maxdepth 4 -name install)
-          find "$install_root" -type f -name 'cache-*.tar.gz' -maxdepth 1 -exec tar -xzf {} -C "$install_root" \;
+          install_root=$(find ./build -maxdepth 4 -type d -name install 2>/dev/null | head -n 1 || true)
+          [ -n "$install_root" ] && find "$install_root" -type f -name 'cache-*.tar.gz' -maxdepth 1 -exec tar -xzf {} -C "$install_root" \; || true
 
-      # Not supported on docker
-      # - name: ccache
-      #   uses: hendrikmuhs/ccache-action@v1
-      #   with:
-      #     key: ${GITHUB_WORKFLOW}-rockylinux8-x64
+      - name: ccache
+        # Latest release (1.2.19) doesn't support Rocky, so using a specific commit.
+        uses: hendrikmuhs/ccache-action@eca11c308176d48942455b9e5b1b70ff6950a778
+        with:
+          key: ubuntu-22.04-${{ runner.arch }}-rockylinux8
 
       - name: Run Build Script
+        shell: bash
         run: |
-          CXXFLAGS="-O3" CFLAGS="-O3 ${DARWIN_C_SOURCE}" ADD_COMMIT_SHA=1 BUILD_CFG=Release python3 ./nix/build-all.py --diskcleanup
+          set -o pipefail
+          CXXFLAGS="-O3" CFLAGS="-O3 ${DARWIN_C_SOURCE}" ADD_COMMIT_SHA=1 BUILD_CFG=Release python3 ./nix/build-all.py -v --diskcleanup 2>&1 | tee build.log
+
+      - name: Upload Build Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-rocky
+          path: |
+            build.log
+            build/*/*/logs/*.log
+          retention-days: 30
 
       - name: Pack Dependencies
         run: |

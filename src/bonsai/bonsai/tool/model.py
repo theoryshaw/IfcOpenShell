@@ -238,6 +238,8 @@ class Model(bonsai.core.tool.Model):
 
     @classmethod
     def export_surface(cls, obj: bpy.types.Object) -> Union[ifcopenshell.entity_instance, None]:
+        ifc_file = tool.Ifc.get()
+        builder = ShapeBuilder(ifc_file)
         p1, p2, p3 = [v.co.copy() for v in obj.data.vertices[0:3]]
 
         edge1 = p2 - p1
@@ -271,13 +273,8 @@ class Model(bonsai.core.tool.Model):
         cls.bm.edges.ensure_lookup_table()
 
         surface = tool.Ifc.get().createIfcCurveBoundedPlane()
-        surface.BasisSurface = tool.Ifc.get().createIfcPlane(
-            tool.Ifc.get().createIfcAxis2Placement3D(
-                tool.Ifc.get().createIfcCartesianPoint([o / cls.unit_scale for o in p1]),
-                tool.Ifc.get().createIfcDirection([float(o) for o in z_axis]),
-                tool.Ifc.get().createIfcDirection([float(o) for o in x_axis]),
-            )
-        )
+        placement = builder.create_axis2_placement_3d([o / cls.unit_scale for o in p1], z_axis, x_axis)
+        surface.BasisSurface = ifc_file.create_entity("IfcPlane", placement)
 
         surface.OuterBoundary = tool.Ifc.get().add(profile_def.OuterCurve)
         if profile_def.is_a("IfcArbitraryProfileDefWithVoids"):
@@ -657,6 +654,40 @@ class Model(bonsai.core.tool.Model):
         )
 
     @classmethod
+    def get_material_layer_custom_offset(cls, element: ifcopenshell.entity_instance, obj) -> MaterialLayerParameters:
+        unit_scale = ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get())
+        layer_params = tool.Model.get_material_layer_parameters(element)
+        layer_offset = layer_params["offset"]
+        thickness = layer_params["thickness"] / unit_scale
+        props = tool.Material.get_object_material_props(obj)
+        if props.use_custom_offset:
+            if tool.Model.get_usage_type(element) == "LAYER2":
+                custom_offset_reference = props.custom_wall_reference
+            elif tool.Model.get_usage_type(element) == "LAYER3":
+                custom_offset_reference = props.custom_slab_reference
+            else:
+                return None
+
+            custom_offset = props.custom_offset
+            direction_sense = layer_params["direction_sense"]
+            if direction_sense == "POSITIVE" and custom_offset_reference in {"INTERIOR", "TOP"}:
+                layer_offset = custom_offset - thickness * unit_scale
+            if direction_sense == "POSITIVE" and custom_offset_reference in {"CENTER", "MIDDLE"}:
+                layer_offset = custom_offset - (thickness / 2) * unit_scale
+            if (direction_sense == "POSITIVE" and custom_offset_reference in {"EXTERIOR", "BOTTOM"}) or (
+                direction_sense == "NEGATIVE" and custom_offset_reference in {"EXTERIOR", "TOP"}
+            ):
+                layer_offset = custom_offset
+            if direction_sense == "NEGATIVE" and custom_offset_reference in {"CENTER", "MIDDLE"}:
+                layer_offset = custom_offset + (thickness / 2) * unit_scale
+            if direction_sense == "NEGATIVE" and custom_offset_reference in {"INTERIOR", "BOTTOM"}:
+                layer_offset = custom_offset + thickness * unit_scale
+
+            return layer_offset / unit_scale
+
+        return None
+
+    @classmethod
     def get_booleans(
         cls,
         element: Optional[ifcopenshell.entity_instance] = None,
@@ -755,17 +786,21 @@ class Model(bonsai.core.tool.Model):
             elif material.is_a("IfcMaterialLayerSet"):
                 axis = ifcopenshell.util.element.get_pset(element, "EPset_Parametric", "LayerSetDirection")
                 if axis is None:
-                    if element.is_a() in [
+                    if element.is_a() in (
                         "IfcSlabType",
                         "IfcRoofType",
                         "IfcRampType",
                         "IfcPlateType",
-                        "IfcCovering",
-                        "IfcFurniture",
-                    ]:
+                        "IfcSlab",
+                        "IfcRoof",
+                        "IfcRamp",
+                        "IfcPlate",
+                    ):
                         axis = "AXIS3"
-                    else:
+                    elif element.is_a() in ("IfcWallType", "IfcWall"):
                         axis = "AXIS2"
+                    else:
+                        return
                 return f"LAYER{axis[-1]}"
             elif material.is_a("IfcMaterialProfileSetUsage"):
                 # TODO: remove after we support editing profile usages with IfcRevolvedAreaSolid.
@@ -1060,9 +1095,6 @@ class Model(bonsai.core.tool.Model):
             tool.Geometry,
             obj=obj,
             representation=new_representation,
-            should_reload=True,
-            is_global=True,
-            should_sync_changes_first=False,
         )
 
     @classmethod
@@ -1088,6 +1120,9 @@ class Model(bonsai.core.tool.Model):
             # No need to preview to update, Blender will do it in background,
             # `preview.icon_id` doesn't change after `asset_generate_preview()`.
             obj.asset_generate_preview()
+        # Avoid issues with sqlite files.
+        elif type(tool.Ifc.get()) is not ifcopenshell.file:
+            return
         else:
             unit_scale = ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get())
             size = 128
@@ -1272,9 +1307,6 @@ class Model(bonsai.core.tool.Model):
                 tool.Geometry,
                 obj=obj,
                 representation=body,
-                should_reload=True,
-                is_global=True,
-                should_sync_changes_first=False,
             )
 
     @classmethod
@@ -1403,7 +1435,6 @@ class Model(bonsai.core.tool.Model):
 
         number_of_risers = number_of_treads + 1
         tread_rise = height / number_of_risers
-        custom_tread_run = any(run != 0 for run in custom_first_last_tread_run)
         nosing_overlap = max(nosing_length, 0)
         nosing_tread_gap = -min(nosing_length, 0)
         nosing_overlap_offset = -V_(nosing_overlap, 0)
@@ -1434,19 +1465,26 @@ class Model(bonsai.core.tool.Model):
             default_tread_offset = Vector([tread_run, tread_rise])
 
             def get_tread_data(i):
-                if custom_tread_run:
-                    current_tread_run = None
-                    if i == 0:
-                        current_tread_run = custom_first_last_tread_run[0]
-                    elif i == number_of_risers - 1:
-                        current_tread_run = custom_first_last_tread_run[1]
+                # Check if this is first or last tread with custom run
+                current_tread_run = None
+                if i == 0 and custom_first_last_tread_run[0] is not None:
+                    current_tread_run = custom_first_last_tread_run[0]
+                elif i == number_of_risers - 1 and custom_first_last_tread_run[1] is not None:
+                    current_tread_run = custom_first_last_tread_run[1]
 
-                    if current_tread_run:
-                        tread_offset = default_tread_offset.copy()
-                        tread_offset.x = current_tread_run
-                        tread_verts = deepcopy(default_tread_verts)
-                        tread_verts[-1].x = current_tread_run
-                        return tread_offset, tread_verts
+                if current_tread_run is not None:
+                    tread_offset = default_tread_offset.copy()
+                    tread_offset.x = current_tread_run
+
+                    # Handle zero-width treads
+                    if current_tread_run == 0:
+                        # For zero width, just return vertical offset with no horizontal tread
+                        return tread_offset, ()
+
+                    tread_verts = deepcopy(default_tread_verts)
+                    tread_verts[-1].x = current_tread_run
+                    return tread_offset, tread_verts
+
                 return default_tread_offset, default_tread_verts
 
             # treads
@@ -1454,9 +1492,13 @@ class Model(bonsai.core.tool.Model):
             for i in range(number_of_risers):
                 last_vert_i = len(vertices) - 1
                 tread_offset, tread_verts = get_tread_data(i)
-                current_tread_verts = [v + current_offset for v in tread_verts]
-                edges.extend(default_tread_edges + last_vert_i)
-                vertices.extend(current_tread_verts)
+
+                # Skip adding vertices/edges for zero-width treads
+                if tread_verts:
+                    current_tread_verts = [v + current_offset for v in tread_verts]
+                    edges.extend(default_tread_edges + last_vert_i)
+                    vertices.extend(current_tread_verts)
+
                 current_offset += tread_offset
 
         if stair_type == "WOOD/STEEL":
@@ -1471,35 +1513,47 @@ class Model(bonsai.core.tool.Model):
             default_tread_offset = V_(tread_run + nosing_tread_gap, tread_rise)
 
             def get_tread_data(i):
-                if custom_tread_run:
-                    current_tread_run = None
-                    if i == 0 and custom_first_last_tread_run[0] != 0:
-                        current_tread_run = custom_first_last_tread_run[0]
-                    elif i == number_of_risers - 1 and custom_first_last_tread_run[1] != 0:
-                        current_tread_run = custom_first_last_tread_run[1]
+                # Check if this is first or last tread with custom run
+                current_tread_run = None
+                if i == 0 and custom_first_last_tread_run[0] is not None:
+                    current_tread_run = custom_first_last_tread_run[0]
+                elif i == number_of_risers - 1 and custom_first_last_tread_run[1] is not None:
+                    current_tread_run = custom_first_last_tread_run[1]
 
-                    if current_tread_run:
-                        tread_offset = default_tread_offset.copy()
-                        tread_offset.x = current_tread_run + nosing_tread_gap
-                        tread_verts = get_tread_verts(size=V_(current_tread_run + nosing_overlap, tread_depth))
-                        return tread_offset, tread_verts
+                if current_tread_run is not None:
+                    tread_offset = default_tread_offset.copy()
+                    tread_offset.x = current_tread_run + nosing_tread_gap
+
+                    # Handle zero-width treads
+                    if current_tread_run == 0:
+                        return tread_offset, ()
+
+                    tread_verts = get_tread_verts(size=V_(current_tread_run + nosing_overlap, tread_depth))
+                    return tread_offset, tread_verts
+
                 return default_tread_offset, default_tread_verts
 
             # each tread is a separate shape
             cur_offset = V_(0, 0)
+            tread_index = 0
             for i in range(number_of_risers):
                 tread_offset, tread_verts = get_tread_data(i)
-                cur_trade_shape = [v + cur_offset + nosing_overlap_offset for v in tread_verts]
-                vertices.extend(cur_trade_shape)
 
-                cur_vertex = i * 4
-                verts_to_add = (
-                    (cur_vertex, cur_vertex + 1),
-                    (cur_vertex + 1, cur_vertex + 2),
-                    (cur_vertex + 2, cur_vertex + 3),
-                    (cur_vertex + 3, cur_vertex),
-                )
-                edges.extend(verts_to_add)
+                # Skip adding vertices/edges for zero-width treads
+                if tread_verts:
+                    cur_trade_shape = [v + cur_offset + nosing_overlap_offset for v in tread_verts]
+                    vertices.extend(cur_trade_shape)
+
+                    cur_vertex = tread_index * 4
+                    verts_to_add = (
+                        (cur_vertex, cur_vertex + 1),
+                        (cur_vertex + 1, cur_vertex + 2),
+                        (cur_vertex + 2, cur_vertex + 3),
+                        (cur_vertex + 3, cur_vertex),
+                    )
+                    edges.extend(verts_to_add)
+                    tread_index += 1
+
                 cur_offset += tread_offset
 
         elif stair_type == "GENERIC":
@@ -1651,9 +1705,6 @@ class Model(bonsai.core.tool.Model):
                 tool.Geometry,
                 obj=obj,
                 representation=representation,
-                should_reload=True,
-                is_global=True,
-                should_sync_changes_first=False,
                 apply_openings=True,
             )
 
@@ -2157,13 +2208,8 @@ class Model(bonsai.core.tool.Model):
     @classmethod
     def add_extrusion_position(cls, extrusion: ifcopenshell.entity_instance, position: Vector) -> None:
         ifc_file = tool.Ifc.get()
-
-        new_position = ifc_file.createIfcAxis2Placement3D(
-            ifc_file.createIfcCartesianPoint(position),
-            ifc_file.createIfcDirection((0.0, 0.0, 1.0)),
-            ifc_file.createIfcDirection((1.0, 0.0, 0.0)),
-        )
-
+        builder = ShapeBuilder(ifc_file)
+        new_position = builder.create_axis2_placement_3d(position)
         extrusion.Position = new_position
 
     @classmethod
@@ -2472,9 +2518,6 @@ class Model(bonsai.core.tool.Model):
             tool.Geometry,
             obj=obj,
             representation=rep,
-            should_reload=True,
-            is_global=True,
-            should_sync_changes_first=False,
         )
         tool.Geometry.record_object_materials(obj)
 
@@ -2504,4 +2547,10 @@ class Model(bonsai.core.tool.Model):
                 queue.add((rel.RelatingElement, obj))
         for element, wall in queue:
             if tool.Model.get_usage_type(element) == "LAYER2" and wall:
+                # Use layer custom offset
+                custom_offset = tool.Model.get_material_layer_custom_offset(element, wall)
+                material = ifcopenshell.util.element.get_material(element)
+                if material.is_a("IfcMaterialLayerSetUsage") and custom_offset is not None:
+                    material.OffsetFromReferenceLine = custom_offset
+
                 cls.recreate_wall(element, wall)

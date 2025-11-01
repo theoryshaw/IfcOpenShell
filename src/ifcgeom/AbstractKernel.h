@@ -1,3 +1,22 @@
+/********************************************************************************
+ *                                                                              *
+ * This file is part of IfcOpenShell.                                           *
+ *                                                                              *
+ * IfcOpenShell is free software: you can redistribute it and/or modify         *
+ * it under the terms of the Lesser GNU General Public License as published by  *
+ * the Free Software Foundation, either version 3.0 of the License, or          *
+ * (at your option) any later version.                                          *
+ *                                                                              *
+ * IfcOpenShell is distributed in the hope that it will be useful,              *
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of               *
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the                 *
+ * Lesser GNU General Public License for more details.                          *
+ *                                                                              *
+ * You should have received a copy of the Lesser GNU General Public License     *
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.         *
+ *                                                                              *
+ ********************************************************************************/
+
 #ifndef ABSTRACT_KERNEL_H
 #define ABSTRACT_KERNEL_H
 
@@ -7,6 +26,7 @@
 #include "../ifcgeom/IfcGeomRepresentation.h"
 #include "../ifcgeom/taxonomy.h"
 #include "../ifcgeom/ConversionSettings.h"
+#include "../ifcgeom/abstract_mapping.h"
 
 static const double ALMOST_ZERO = 1.e-9;
 
@@ -16,21 +36,26 @@ inline static bool ALMOST_THE_SAME(const T& a, const T& b, double tolerance = AL
 }
 
 namespace ifcopenshell { 
-	
+
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable: 4275)
+#endif
+
 	class IFC_GEOM_API not_implemented_error : public std::exception {
 	public:
-		const char* what() const noexcept override {
-			return "Not implemented.";
-		}
+		const char* what() const noexcept override;
 	};
 
 	class IFC_GEOM_API not_supported_error : public std::exception {
 	public:
-		const char* what() const noexcept override {
-			return "Not supported.";
-		}
+		const char* what() const noexcept override;
 	};
-	
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+
 	namespace geometry { namespace kernels {
 
 	class IFC_GEOM_API AbstractKernel {
@@ -54,6 +79,8 @@ namespace ifcopenshell {
 		const std::string& geometry_library() const {
 			return geometry_library_;
 		}
+
+		virtual bool supports_boolean_operations() const = 0;
 
 		virtual bool convert_impl(const taxonomy::matrix4::ptr, IfcGeom::ConversionResults&) { throw not_implemented_error(); }
 		virtual bool convert_impl(const taxonomy::point3::ptr, IfcGeom::ConversionResults&) { throw not_implemented_error(); }
@@ -98,10 +125,9 @@ namespace ifcopenshell {
 		virtual bool convert_openings(const IfcUtil::IfcBaseEntity* entity, const std::vector<std::pair<taxonomy::ptr, ifcopenshell::geometry::taxonomy::matrix4>>& openings,
 			const IfcGeom::ConversionResults& entity_shapes, const ifcopenshell::geometry::taxonomy::matrix4& entity_trsf, IfcGeom::ConversionResults& cut_shapes) = 0;
 		virtual bool unify_shapes(const IfcGeom::ConversionResults&, IfcGeom::ConversionResults&) { throw not_implemented_error(); }
+
+		virtual AbstractKernel* clone() const = 0;
 	};
-
-	AbstractKernel* construct(IfcParse::IfcFile* file, const std::string& geometry_library, Settings& conv_settings);
-
 }
 }
 }

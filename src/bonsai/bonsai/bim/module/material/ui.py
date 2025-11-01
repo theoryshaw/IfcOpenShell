@@ -231,6 +231,7 @@ class BIM_PT_object_material(Panel):
         bonsai.bim.helper.draw_attributes(self.props.material_set_attributes, self.layout)
         bonsai.bim.helper.draw_attributes(self.props.material_set_usage_attributes, self.layout)
 
+        self.draw_custom_offset()
         if ObjectMaterialData.data["set_item_name"] == "profile" and not self.mprops.profiles:
             row = self.layout.row(align=True)
             row.label(text="No Profiles Available")
@@ -252,6 +253,10 @@ class BIM_PT_object_material(Panel):
         box = layout.box()
         active_object = bpy.context.active_object
         self.layerset_bounds(box, active_object, location="Top_Exterior")
+
+        if not ObjectMaterialData.data["set_items"]:
+            row = box.row()
+            row.label(text="No Materials Found")
 
         for set_item in ObjectMaterialData.data["set_items"]:
             if (
@@ -356,6 +361,10 @@ class BIM_PT_object_material(Panel):
         active_object = bpy.context.active_object
         self.layerset_bounds(box, active_object, location="Top_Interior")
 
+        if not ObjectMaterialData.data["set_items"]:
+            row = box.row()
+            row.label(text="No Materials Found")
+
         for set_item in ObjectMaterialData.data["set_items"]:
             material_name = set_item["material"]
             material_id = set_item["material_id"]
@@ -389,6 +398,25 @@ class BIM_PT_object_material(Panel):
                     row.label(text="Bottom")
                 else:
                     row.label(text="Exterior")
+
+    def draw_custom_offset(self):
+        set_usage = ObjectMaterialData.data.get("set_usage", {})
+        layer_set_direction = set_usage.get("layer_set_direction")
+        if layer_set_direction:
+            box = self.layout.box()
+            row = box.row(align=True)
+            row.prop(self.props, "use_custom_offset", text="Use Custom Offset")
+            row = box.row(align=True)
+            if layer_set_direction == "AXIS2":
+                row.prop(self.props, "custom_wall_reference", text="Reference")
+                row.enabled = self.props.use_custom_offset
+            if layer_set_direction == "AXIS3":
+                row.prop(self.props, "custom_slab_reference", text="Reference")
+                row.enabled = self.props.use_custom_offset
+
+            row = box.row(align=True)
+            row.prop(self.props, "custom_offset", text="Custom Offset")
+            row.enabled = self.props.use_custom_offset
 
 
 class BIM_UL_materials(UIList):

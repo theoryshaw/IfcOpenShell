@@ -167,9 +167,6 @@ class DumbSlabGenerator:
             tool.Geometry,
             obj=obj,
             representation=representation,
-            should_reload=True,
-            is_global=True,
-            should_sync_changes_first=False,
         )
         obj.matrix_world = obj.matrix_world @ Matrix.Rotation(self.x_angle, 4, "X")
 
@@ -292,6 +289,9 @@ class DumbSlabPlaner:
         if thickness == 0:
             return
 
+        custom_offset = tool.Model.get_material_layer_custom_offset(element, obj)
+        layer_offset = (custom_offset * self.unit_scale) if custom_offset is not None else layer_params["offset"]
+
         representation = ifcopenshell.util.representation.get_representation(element, "Model", "Body", "MODEL_VIEW")
         if representation:
             extrusion = tool.Model.get_extrusion(representation)
@@ -307,7 +307,7 @@ class DumbSlabPlaner:
                 direction_ratios = Vector(extrusion.ExtrudedDirection.DirectionRatios)
                 offset_direction = direction_ratios.copy()
                 perpendicular_depth = thickness * abs(1 / cos(existing_x_angle))
-                perpendicular_offset = layer_params["offset"] * abs(1 / cos(existing_x_angle)) / self.unit_scale
+                perpendicular_offset = layer_offset * abs(1 / cos(existing_x_angle)) / self.unit_scale
 
                 # Check angle and z direction to determine whether the extrusion direction is positive or negative
                 if (abs(existing_x_angle) < (pi / 2) and direction_ratios.z > 0) or (
@@ -331,15 +331,15 @@ class DumbSlabPlaner:
                 extrusion.Depth = perpendicular_depth
 
                 ifc_position = extrusion.Position
-                if perpendicular_offset == 0.0:
-                    # Clean up possible previous offset.
-                    tool.Model.reset_extrusion_position(extrusion)
+                position = offset_direction * perpendicular_offset
+                material = ifcopenshell.util.element.get_material(element)
+                if material:
+                    if material.is_a("IfcMaterialLayerSetUsage"):
+                        material.OffsetFromReferenceLine = position.z
+                if ifc_position:
+                    ifc_position.Location.Coordinates = position
                 else:
-                    position = offset_direction * perpendicular_offset
-                    if ifc_position:
-                        ifc_position.Location.Coordinates = position
-                    else:
-                        tool.Model.add_extrusion_position(extrusion, position)
+                    tool.Model.add_extrusion_position(extrusion, position)
 
             else:
                 props = tool.Model.get_model_props()
@@ -357,9 +357,6 @@ class DumbSlabPlaner:
                     tool.Geometry,
                     obj=obj,
                     representation=new_rep,
-                    should_reload=True,
-                    is_global=True,
-                    should_sync_changes_first=False,
                 )
                 bonsai.core.geometry.remove_representation(
                     tool.Ifc, tool.Geometry, obj=obj, representation=representation
@@ -383,9 +380,6 @@ class DumbSlabPlaner:
             tool.Geometry,
             obj=obj,
             representation=representation,
-            should_reload=True,
-            is_global=True,
-            should_sync_changes_first=False,
         )
 
 
@@ -585,9 +579,6 @@ class EditSketchExtrusionProfile(bpy.types.Operator, tool.Ifc.Operator):
             tool.Geometry,
             obj=obj,
             representation=representation,
-            should_reload=True,
-            is_global=True,
-            should_sync_changes_first=False,
         )
         return {"FINISHED"}
 
@@ -629,9 +620,6 @@ def disable_editing_extrusion_profile(context):
         tool.Geometry,
         obj=obj,
         representation=body,
-        should_reload=True,
-        is_global=True,
-        should_sync_changes_first=False,
     )
     return {"FINISHED"}
 
@@ -764,9 +752,6 @@ class EditExtrusionProfile(bpy.types.Operator, tool.Ifc.Operator):
             tool.Geometry,
             obj=obj,
             representation=body,
-            should_reload=True,
-            is_global=True,
-            should_sync_changes_first=False,
         )
 
         # Only certain classes should have a footprint

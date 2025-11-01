@@ -98,7 +98,8 @@ class DumbProfileGenerator:
             vec1 = Vector((polyline_points[i].x, polyline_points[i].y, polyline_points[i].z))
             vec2 = Vector((polyline_points[i + 1].x, polyline_points[i + 1].y, polyline_points[i + 1].z))
             coords = (vec1, vec2)
-            profiles.append(self.create_profile_from_2_points(coords))
+            if profile := self.create_profile_from_2_points(coords):
+                profiles.append(profile)
         return profiles, is_polyline_closed
 
     def derive_from_cursor(self) -> bpy.types.Object:
@@ -166,9 +167,6 @@ class DumbProfileGenerator:
             tool.Geometry,
             obj=obj,
             representation=representation,
-            should_reload=True,
-            is_global=True,
-            should_sync_changes_first=False,
         )
 
         pset = ifcopenshell.api.pset.add_pset(self.file, product=element, name="EPset_Parametric")
@@ -183,7 +181,7 @@ class DumbProfileGenerator:
     ) -> ProfileFrom2PointsReturn:
         self.direction = coords[1] - coords[0]
         length = self.direction.length
-        if round(length, 4) < 0.1:
+        if round(length, 4) < 0.001:
             return
         data: dict[str, Any] = {"coords": coords}
 
@@ -567,9 +565,6 @@ class DumbProfileJoiner:
             tool.Geometry,
             obj=obj,
             representation=new_body,
-            should_reload=True,
-            is_global=True,
-            should_sync_changes_first=False,
         )
         tool.Geometry.record_object_materials(obj)
         if element.is_a("IfcFlowSegment") or element.is_a("IfcFlowFitting"):
@@ -1036,9 +1031,6 @@ def disable_editing_extrusion_axis(context):
         tool.Geometry,
         obj=obj,
         representation=body,
-        should_reload=True,
-        is_global=True,
-        should_sync_changes_first=False,
     )
     return {"FINISHED"}
 
@@ -1100,9 +1092,6 @@ class EditExtrusionAxis(bpy.types.Operator, tool.Ifc.Operator):
             tool.Geometry,
             obj=obj,
             representation=body,
-            should_reload=True,
-            is_global=True,
-            should_sync_changes_first=False,
         )
 
         bpy.context.view_layer.update()

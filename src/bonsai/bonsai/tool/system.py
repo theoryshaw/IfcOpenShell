@@ -29,11 +29,11 @@ import bonsai.core.tool
 import bonsai.tool as tool
 from bonsai.bim import import_ifc
 import re
-from math import pi, cos, sin
 from mathutils import Matrix, Vector
 from bonsai.bim.module.system.data import ObjectSystemData, SystemDecorationData
 from enum import Enum
 from typing import TYPE_CHECKING, Optional, Any, Union
+from natsort import natsorted
 
 if TYPE_CHECKING:
     from bonsai.bim.module.system.prop import BIMSystemProperties, BIMZoneProperties, BIMZoneProperties
@@ -47,6 +47,16 @@ class System(bonsai.core.tool.System):
     @classmethod
     def get_zone_props(cls) -> BIMZoneProperties:
         return bpy.context.scene.BIMZoneProperties
+
+    SYSTEM_ICONS = {
+        "IfcSystem": "EXTERNAL_DRIVE",
+        "IfcDistributionSystem": "NETWORK_DRIVE",
+        "IfcDistributionCircuit": "DRIVER",
+        "IfcBuildingSystem": "MOD_BUILD",
+        "IfcBuiltSystem": "MOD_BUILD",
+        "IfcZone": "CUBE",
+    }
+    SYSTEM_ICONS["IfcElectricalCircuit"] = SYSTEM_ICONS["IfcDistributionCircuit"]
 
     @classmethod
     def add_ports(
@@ -161,15 +171,7 @@ class System(bonsai.core.tool.System):
 
     @classmethod
     def import_systems(cls) -> None:
-        props = cls.get_system_props()
-        props.systems.clear()
-        for system in cls.get_systems():
-            if system.is_a() in ["IfcStructuralAnalysisModel"]:
-                continue
-            new = props.systems.add()
-            new.ifc_definition_id = system.id()
-            new["name"] = system.Name or "Unnamed"
-            new.ifc_class = system.is_a()
+        tool.Group.import_groups("IfcSystem")
 
     @classmethod
     def load_ports(cls, element: ifcopenshell.entity_instance, ports: list[ifcopenshell.entity_instance]) -> None:
@@ -438,10 +440,8 @@ class System(bonsai.core.tool.System):
 
     @classmethod
     def draw_system_ui(cls, layout: bpy.types.UILayout, system_id: int, system_name: str, system_class: str) -> None:
-        from bonsai.bim.module.system.ui import SYSTEM_ICONS
-
         row = layout.row(align=True)
-        row.label(text=system_name, icon=SYSTEM_ICONS[system_class])
+        row.label(text=system_name, icon=cls.SYSTEM_ICONS[system_class])
         op = row.operator("bim.select_system_products", text="", icon="RESTRICT_SELECT_OFF")
         op.system = system_id
         op = row.operator("bim.unassign_system", text="", icon="X")

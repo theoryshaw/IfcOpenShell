@@ -219,9 +219,7 @@ class IfcImporter:
         self.gross_elements: set[ifcopenshell.entity_instance] = set()
         self.element_types: set[ifcopenshell.entity_instance] = set()
         self.spatial_elements: set[ifcopenshell.entity_instance] = set()
-        self.type_products = {}
         self.meshes: dict[str, OBJECT_DATA_TYPE] = {}
-        self.mesh_shapes = {}
         self.time = 0
         self.unit_scale = 1.0
         # ifc definition ids to blender elements mapping
@@ -285,6 +283,7 @@ class IfcImporter:
         self.place_objects_in_collections()
         self.profile_code("Place objects in collections")
         self.setup_arrays()
+        self.update_linked_aggregates()
         self.profile_code("Setup arrays")
         tool.Project.load_linked_models_from_ifc()
         self.profile_code("Load linked models")
@@ -463,6 +462,10 @@ class IfcImporter:
         return False
 
     def calculate_model_offset(self) -> None:
+        # TODO:
+        if isinstance(self.file, ifcopenshell.sqlite):
+            print("WARNING. Calculating model offset for IFCSQLite is not supported.")
+            return
         props = tool.Georeference.get_georeference_props()
         if self.ifc_import_settings.false_origin_mode == "MANUAL":
             tool.Loader.set_manual_blender_offset(self.file)
@@ -516,10 +519,51 @@ class IfcImporter:
             self.set_matrix_world(obj, tool.Loader.apply_blender_offset_to_matrix_world(obj, grid_placement))
 
     def create_element_types(self):
+        # TODO:
+        if isinstance(self.file, ifcopenshell.sqlite):
+            self.create_element_types_sqlite(self.element_types)
+            return
         for element_type in self.element_types:
-            if not element_type:
-                continue
             self.create_element_type(element_type)
+
+    def create_element_types_sqlite(self, element_types: set[ifcopenshell.entity_instance]) -> None:
+        assert isinstance(self.file, ifcopenshell.sqlite)
+        geometry_cache = self.file.get_geometry([e.id() for e in element_types])
+        geometry_meshes: dict[str, bpy.types.Mesh] = {}
+        for geometry_id, geometry in geometry_cache["geometry"].items():
+            verts = geometry["verts"]
+            fake_geometry = type("Geometry", (), {"id": geometry_id})
+            mesh_name = tool.Loader.get_mesh_name_from_shape(fake_geometry)  # pyright: ignore[reportArgumentType]
+            mesh = bpy.data.meshes.new(mesh_name)
+
+            if geometry["faces"].size:
+                mesh = tool.Loader.create_mesh_from_shape(
+                    mesh=mesh, faces=geometry["faces"].reshape(-1, 3), verts=verts.reshape(-1, 3)
+                )
+            else:
+                vertices = verts.reshape(-1, 3).tolist()
+                edges = geometry["edges"].reshape(-1, 2).tolist()
+                mesh.from_pydata(vertices, edges, [])
+            tool.Loader.link_mesh(fake_geometry, mesh)  # pyright: ignore[reportArgumentType]
+
+            mesh["ios_materials"] = geometry["materials"]
+            mesh["ios_material_ids"] = geometry["material_ids"]
+            self.meshes[mesh_name] = mesh
+            geometry_meshes[geometry_id] = mesh
+
+        shapes = geometry_cache["shapes"]
+        for element in element_types:
+            # Allow missing element types to accomodate older ifcsqlite files
+            # that didn't store element types geometry.
+            shape = shapes.get(element.id())
+            if shape:
+                geometry_id = shapes[element.id()]["geometry"]
+            else:
+                geometry_id = None
+            mesh = None if geometry_id is None else geometry_meshes[geometry_id]
+            obj = bpy.data.objects.new(tool.Loader.get_name(element), mesh)
+            self.link_element(element, obj)
+            self.material_creator.create(element, obj, mesh, False)
 
     def create_element_type(self, element: ifcopenshell.entity_instance) -> None:
         self.ifc_import_settings.logger.info("Creating object %s", element)
@@ -547,7 +591,6 @@ class IfcImporter:
         obj = bpy.data.objects.new(tool.Loader.get_name(element), mesh)
         self.link_element(element, obj)
         self.material_creator.create(element, obj, mesh, False)
-        self.type_products[element.GlobalId] = obj
 
     def create_native_elements(self):
         if not self.ifc_import_settings.should_load_geometry:
@@ -582,18 +625,13 @@ class IfcImporter:
         print("Done creating geometry")
 
     def create_spatial_elements(self) -> None:
-        if tool.Blender.get_addon_preferences().spatial_elements_unselectable:
-            self.create_generic_elements(self.spatial_elements, unselectable=True)
-        else:
-            self.create_generic_elements(self.spatial_elements, unselectable=False)
+        self.create_generic_elements(self.spatial_elements)
 
     def create_elements(self) -> None:
         self.create_generic_elements(self.elements)
         self.create_generic_elements(self.gross_elements, is_gross=True)
 
-    def create_generic_elements(
-        self, elements: set[ifcopenshell.entity_instance], unselectable=False, is_gross=False
-    ) -> None:
+    def create_generic_elements(self, elements: set[ifcopenshell.entity_instance], is_gross=False) -> None:
         if isinstance(self.file, ifcopenshell.sqlite):
             return self.create_generic_sqlite_elements(elements)
 
@@ -617,10 +655,6 @@ class IfcImporter:
                 print("{} / {} elements processed ...".format(i, total))
             objects.add(self.create_product(element))
 
-        if unselectable:
-            for obj in objects:
-                obj.hide_select = True
-
     def create_generic_sqlite_elements(self, elements: set[ifcopenshell.entity_instance]) -> None:
         assert isinstance(self.file, ifcopenshell.sql.sqlite)
         self.geometry_cache = self.file.get_geometry([e.id() for e in elements])
@@ -631,15 +665,13 @@ class IfcImporter:
             verts = geometry["verts"]
             mesh["has_cartesian_point_offset"] = False
 
-            if geometry["faces"]:
+            if geometry["faces"].size:
                 mesh = tool.Loader.create_mesh_from_shape(
                     mesh=mesh, faces=geometry["faces"].reshape(-1, 3), verts=verts.reshape(-1, 3)
                 )
             else:
-                e = geometry["edges"]
-                v = verts
-                vertices = [[v[i], v[i + 1], v[i + 2]] for i in range(0, len(v), 3)]
-                edges = [[e[i], e[i + 1]] for i in range(0, len(e), 2)]
+                vertices = verts.reshape(-1, 3).tolist()
+                edges = geometry["edges"].reshape(-1, 2).tolist()
                 mesh.from_pydata(vertices, edges, [])
 
             mesh["ios_materials"] = geometry["materials"]
@@ -920,6 +952,9 @@ class IfcImporter:
         if not props.ifc_file:
             props.ifc_file = self.ifc_import_settings.input_file
         self.file = tool.Ifc.get()
+        # IFC4 Reference View shall have no booleans https://github.com/BuildingSMART/IFC4-CV/issues/14
+        if self.file.schema == "IFC4" and "ReferenceView" in str(self.file.header.file_description.description):
+            self.ifc_import_settings.void_limit = 0
 
     def calculate_unit_scale(self):
         self.unit_scale = ifcopenshell.util.unit.calculate_unit_scale(self.file)
@@ -977,6 +1012,7 @@ class IfcImporter:
         )
         obj = self.create_product(self.project["ifc"])
         obj.hide_select = True
+        obj.hide_viewport = True
         self.project["blender"].objects.link(obj)
         self.project["blender"].BIMCollectionProperties.obj = obj
         props = tool.Blender.get_object_bim_props(obj)
@@ -1177,6 +1213,36 @@ class IfcImporter:
                     for i in range(len(data)):
                         tool.Blender.Modifier.Array.set_children_lock_state(element, i, True)
                         tool.Blender.Modifier.Array.constrain_children_to_parent(element)
+
+    def update_linked_aggregates(self):
+        # TODO Remove this after a while. See commit 17d6b8a
+        # https://github.com/IfcOpenShell/IfcOpenShell/commit/17d6b8af61c8dd7cd82f6e72b2fb3831d851a33d#commitcomment-163151609
+
+        groups = self.file.by_type("IfcGroup")
+        target_groups = [group for group in groups if group.Name == "BBIM_Linked_Aggregate"]
+        if not target_groups:
+            return
+
+        for i, group in enumerate(target_groups):
+            name = "Default"
+            elements = ifcopenshell.util.element.get_grouped_by(self.file.by_id(group.id()), is_recursive=True)
+            for j, element in enumerate(elements):
+                split = element.Name.rsplit("_")
+                name = split[0]
+                try:
+                    aggregate_index = int(split[1])
+                except:
+                    aggregate_index = 0
+                pset = ifcopenshell.util.element.get_pset(element, "BBIM_Linked_Aggregate", should_inherit=False)
+                if not pset:
+                    return
+                if "Aggregate_Index" not in pset.keys():
+                    ifcopenshell.api.run(
+                        "pset.edit_pset",
+                        self.file,
+                        pset=self.file.by_id(pset["id"]),
+                        properties={"Aggregate_Index": aggregate_index, "Name": name},
+                    )
 
 
 class IfcImportSettings:

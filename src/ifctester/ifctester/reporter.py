@@ -55,6 +55,7 @@ class Results(TypedDict):
     date: str
     filepath: str
     filename: str
+    hide_skipped: bool
     specifications: list[ResultsSpecification]
     status: bool
     total_specifications: int
@@ -86,7 +87,7 @@ class ResultsSpecification(TypedDict):
     total_checks_pass: int
     total_checks_fail: int
     percent_checks_pass: ResultsPercent
-    required: bool
+    cardinality: str
     applicability: list[str]
     requirements: list[ResultsRequirement]
 
@@ -236,9 +237,10 @@ class Txt(Console):
 
 
 class Json(Reporter):
-    def __init__(self, ids: Ids):
+    def __init__(self, ids: Ids, hide_skipped=False):
         super().__init__(ids)
         self.results = Results()
+        self.results["hide_skipped"] = hide_skipped
 
     def report(self) -> Results:
         self.results["title"] = self.ids.info.get("title", "Untitled IDS")
@@ -356,6 +358,13 @@ class Json(Reporter):
         )
         percent_checks_pass = math.floor((total_checks_pass / total_checks) * 100) if total_checks else "N/A"
 
+        if specification.minOccurs == 1 and specification.maxOccurs == "unbounded":
+            cardinality = "required"
+        elif specification.minOccurs == 0 and specification.maxOccurs == "unbounded":
+            cardinality = "optional"
+        elif specification.minOccurs == 0 and specification.maxOccurs == 0:
+            cardinality = "prohibited"
+
         return ResultsSpecification(
             name=specification.name,
             description=specification.description,
@@ -370,7 +379,7 @@ class Json(Reporter):
             total_checks_pass=total_checks_pass,
             total_checks_fail=total_checks - total_checks_pass,
             percent_checks_pass=percent_checks_pass,
-            required=specification.minOccurs != 0,
+            cardinality=cardinality,
             applicability=applicability,
             requirements=requirements,
         )
@@ -428,13 +437,19 @@ class Json(Reporter):
 
 
 class Html(Json):
-    def __init__(self, ids: Ids):
+    def __init__(self, ids: Ids, hide_skipped: bool = False):
         self.entity_limit = 100
         super().__init__(ids)
+        self.results["hide_skipped"] = hide_skipped
 
     def report(self) -> None:
         super().report()
         for spec in self.results["specifications"]:
+            if spec["cardinality"] == "optional" and spec["total_checks"] == 0:
+                spec["is_skipped"] = True
+            spec["is_prohibited"] = spec["cardinality"] == "prohibited"
+            spec["cardinality"] = spec["cardinality"].capitalize()
+            spec["has_requirements"] = bool(spec["requirements"])
             for requirement in spec["requirements"]:
                 total_passed_entities = len(requirement["passed_entities"])
                 total_failed_entities = len(requirement["failed_entities"])
@@ -446,6 +461,7 @@ class Html(Json):
                 requirement["total_passed_entities"] = total_passed_entities
                 requirement["total_omitted_passes"] = total_passed_entities - self.entity_limit
                 requirement["has_omitted_passes"] = total_passed_entities > self.entity_limit
+                requirement["instructions"] = requirement["metadata"].get("@instructions")
 
     def limit_entities(self, entities):
         if len(entities) > self.entity_limit:

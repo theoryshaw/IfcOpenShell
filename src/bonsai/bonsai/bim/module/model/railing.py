@@ -538,9 +538,6 @@ def cancel_editing_railing_path(context: bpy.types.Context) -> set[str]:
             tool.Geometry,
             obj=obj,
             representation=body,
-            should_reload=True,
-            is_global=True,
-            should_sync_changes_first=False,
         )
 
     return {"FINISHED"}

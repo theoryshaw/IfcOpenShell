@@ -175,7 +175,6 @@ class Spatial(bonsai.core.tool.Spatial):
 
     @classmethod
     def select_products(cls, products: Iterable[ifcopenshell.entity_instance], unhide: bool = False) -> None:
-        bpy.ops.object.select_all(action="DESELECT")
         for product in products:
             obj = tool.Ifc.get_object(product)
             if obj and bpy.context.view_layer.objects.get(obj.name):
@@ -1198,10 +1197,29 @@ class Spatial(bonsai.core.tool.Spatial):
             tool.Geometry,
             obj=obj,
             representation=body,
-            should_reload=True,
-            is_global=True,
-            should_sync_changes_first=False,
         )
+
+    @classmethod
+    def set_space_visibility(cls, is_visible: bool) -> None:
+        if tool.Ifc.get().schema == "IFC2X3":
+            elements = tool.Ifc.get().by_type("IfcSpatialStructureElement")
+        else:
+            elements = tool.Ifc.get().by_type("IfcSpatialElement")
+        for element in elements:
+            if obj := tool.Ifc.get_object(element):
+                if obj.hide_viewport is True and is_visible:
+                    obj.hide_viewport = False
+                elif obj.hide_viewport is False and not is_visible:
+                    obj.hide_viewport = True
+
+    @classmethod
+    def set_grid_visibility(cls, is_visible: bool) -> None:
+        for element in tool.Ifc.get().by_type("IfcGrid") + tool.Ifc.get().by_type("IfcGridAxis"):
+            if obj := tool.Ifc.get_object(element):
+                if obj.hide_viewport is True and is_visible:
+                    obj.hide_viewport = False
+                elif obj.hide_viewport is False and not is_visible:
+                    obj.hide_viewport = True
 
     @classmethod
     def toggle_spaces_visibility_wired_and_textured(cls, spaces: list[ifcopenshell.entity_instance]) -> None:

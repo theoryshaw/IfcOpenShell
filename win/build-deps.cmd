@@ -20,6 +20,9 @@
 :: This batch file expects CMake generator as %1 and build configuration type as %2. If not provided,
 :: a deduced generator will be used for %1 and BUILD_CFG_DEFAULT for %2 (both set in vs-cfg.cmd)
 :: Optionally a build type (Build/Rebuild/Clean) can be passed as %3.
+::
+:: Example usage (all arguments are optional):
+:: build-deps.cmd vs2022-x64 RelWithDebInfo Build
 
 @echo off
 echo.
@@ -32,7 +35,7 @@ if NOT "%CD%" == "%batpath%" (
 
 
 set PROJECT_NAME=IfcOpenShell
-call utils\cecho.cmd 15 0 "This script fetches and builds all %PROJECT_NAME% dependencies"
+call utils\cecho.cmd 0 15 "This script fetches and builds all %PROJECT_NAME% dependencies"
 echo.
 
 :: Enable the delayed environment variable expansion needed in vs-cfg.cmd.
@@ -87,10 +90,6 @@ IF %VS_VER%==2008 set PATH=C:\Windows\Microsoft.NET\Framework\v3.5;%PATH%
 
 :: User-configurable build options
 IF NOT DEFINED IFCOS_INSTALL_PYTHON set IFCOS_INSTALL_PYTHON=TRUE
-set PYTHON_VERSION=3.11
-py -%PYTHON_VERSION% --version 2>&1>NUL
-IF %ERRORLEVEL%==0 set IFCOS_INSTALL_PYTHON=EXISTS
-set PYTHON_VERSION=%PYTHON_VERSION%.7
 
 IF NOT DEFINED IFCOS_NUM_BUILD_PROCS set IFCOS_NUM_BUILD_PROCS=%NUMBER_OF_PROCESSORS%
 
@@ -144,12 +143,12 @@ echo     Defaults to RelWithDebInfo if not specified.
 IF %BUILD_CFG%==MinSizeRel call cecho.cmd 0 14 "     WARNING: MinSizeRel build can suffer from a significant performance loss."
 call cecho.cmd 0 13 "* Build Type`t`t= %BUILD_TYPE%"
 echo   - The used build type for the dependencies (Build, Rebuild, Clean).
-echo     Defaults to Build if not specified. Rebuild/Clean also uninstalls Python (if it was installed by this script).
+echo     Defaults to Build if not specified.
 call cecho.cmd 0 13 "* IFCOS_INSTALL_PYTHON`t= %IFCOS_INSTALL_PYTHON%"
 echo   - Download and install Python.
 echo     Set to something other than TRUE if you wish to use an already installed version of Python.
-echo     EXISTS value is set automatically if same Python version is already found on the system
-echo     and we won't be able to install it again.
+echo     But then you'll need to set PYTHONHOME env variable to your Python installation before running run-cmake.bat
+echo     to your Python installation path.
 call cecho.cmd 0 13 "* IFCOS_NUM_BUILD_PROCS`t= %IFCOS_NUM_BUILD_PROCS%"
 echo   - How many MSBuild.exe processes may be run in parallel.
 echo     Defaults to NUMBER_OF_PROCESSORS. Used also by other IfcOpenShell build scripts.
@@ -174,20 +173,20 @@ echo.
 cd "%DEPS_DIR%"
 
 :: VERSIONS
-set HDF5_VERSION=1.12.1
-set HDF5_VERSION_MAJOR=1.12
+:: Don't use HDF5 1.13.0, because it has a broken cmake package path.
+set HDF5_VERSION=1_13_1
 set OCCT_VERSION=7.8.1
-:: NOTE If updating the default Python version, change PY_VER_MAJOR_MINOR accordingly in run-cmake.bat
-set PYTHON_VERSION=%PYTHON_VERSION%
+IF DEFINED PYTHON_VERSION (
+    echo Using overridden PYTHON_VERSION: '%PYTHON_VERSION%'
+) else (
+    set PYTHON_VERSION=3.11.7
+)
 
 :: VERSION DERIVATIONS
 set OCC_INCLUDE_DIR=%INSTALL_DIR%\opencascade-%OCCT_VERSION%\inc>>"%~dp0\%BUILD_DEPS_CACHE_PATH%"
 set OCC_LIBRARY_DIR=%INSTALL_DIR%\opencascade-%OCCT_VERSION%\win%ARCH_BITS%\lib>>"%~dp0\%BUILD_DEPS_CACHE_PATH%"
-for /f "tokens=1,2,3 delims=." %%a in ("%PYTHON_VERSION%") do (
-    set PY_VER_MAJOR_MINOR=%%a%%b
-)
 IF "%IFCOS_INSTALL_PYTHON%"=="TRUE" (
-    set PYTHONHOME=%INSTALL_DIR%\Python%PY_VER_MAJOR_MINOR%
+    set PYTHONHOME=%DEPS_DIR%\python.%PYTHON_VERSION%\tools
 )
 
 :: Cache last used CMake generator and configurable dependency dirs for other scripts to use
@@ -198,9 +197,55 @@ echo HDF5_VERSION=%HDF5_VERSION%>>"%~dp0\%BUILD_DEPS_CACHE_PATH%"
 echo OCC_INCLUDE_DIR=%OCC_INCLUDE_DIR%>>"%~dp0\%BUILD_DEPS_CACHE_PATH%"
 echo OCC_LIBRARY_DIR=%OCC_LIBRARY_DIR%>>"%~dp0\%BUILD_DEPS_CACHE_PATH%"
 IF "%IFCOS_INSTALL_PYTHON%"=="TRUE" (
-    echo PY_VER_MAJOR_MINOR=%PY_VER_MAJOR_MINOR%>>"%~dp0\%BUILD_DEPS_CACHE_PATH%"
     echo PYTHONHOME=%PYTHONHOME%>>"%~dp0\%BUILD_DEPS_CACHE_PATH%"
 )
+
+
+:nuget
+set DEPENDENCY_NAME=nuget
+set NUGET_VERSION=6.14.0
+set NUGET_INSTALL_DIR=%DEPS_DIR%\nuget-%NUGET_VERSION%
+set NUGET_EXE=%NUGET_INSTALL_DIR%\nuget.exe
+
+where nuget >nul 2>&1
+IF %ERRORLEVEL%==0 (
+    echo Found existing nuget in PATH. Skipping.
+    for /f "delims=" %%i in ('where nuget') do set "NUGET_EXE=%%i"
+    goto :ccache
+)
+
+IF EXIST "%NUGET_EXE%" (
+    echo Found existing "%DEPS_DIR%\nuget.exe", skipping
+    goto :ccache
+)
+
+cd %DEPS_DIR%
+call :DownloadFile ^
+    https://dist.nuget.org/win-x86-commandline/v%NUGET_VERSION%/nuget.exe ^
+    "%NUGET_INSTALL_DIR%" nuget.exe
+IF NOT %ERRORLEVEL%==0 GOTO :Error
+
+
+:ccache
+set DEPENDENCY_NAME=ccache
+set CCACHE_VERSION=4.12.1
+set CCACHE_INSTALL_DIR=%DEPS_DIR%\%DEPENDENCY_NAME%.%CCACHE_VERSION%\tools
+set DEPENDENCY_DIR=%CCACHE_INSTALL_DIR%
+
+where ccache >nul 2>&1
+IF %ERRORLEVEL%==0 (
+    echo Found existing ccache in PATH. Skipping.
+    goto :proj
+)
+
+echo CCACHE_INSTALL_DIR=%CCACHE_INSTALL_DIR%>>"%~dp0\%BUILD_DEPS_CACHE_PATH%"
+IF EXIST "%DEPENDENCY_DIR%" (
+    echo Found existing "%DEPENDENCY_DIR%", skipping
+    goto :proj
+)
+
+"%NUGET_EXE%" install ccache -Version %CCACHE_VERSION% -OutputDirectory "%DEPS_DIR%"
+IF NOT %ERRORLEVEL%==0 GOTO :Error
 
 :proj
 
@@ -320,12 +365,13 @@ IF EXIST "%INSTALL_DIR%\%HDF5_INSTALL_NAME%" (
 
 if "%ARCH_BITS%"=="64" set ARCH_BITS_64=64
 call :DownloadFile ^
-    http://support.hdfgroup.org/ftp/HDF5/releases/hdf5-%HDF5_VERSION_MAJOR%/hdf5-%HDF5_VERSION%/src/%HDF5_CMAKE_ZIP% ^
+    https://github.com/HDFGroup/hdf5/archive/refs/tags/hdf5-%HDF5_VERSION%.zip ^
     "%DEPS_DIR%" %HDF5_CMAKE_ZIP%
 IF NOT %ERRORLEVEL%==0 GOTO :Error
 call :ExtractArchive %HDF5_CMAKE_ZIP% "%DEPS_DIR%" "%DEPS_DIR%\hdf5-%HDF5_VERSION%"
 IF NOT %ERRORLEVEL%==0 GOTO :Error
-pushd "%DEPS_DIR%\hdf5-%HDF5_VERSION%"
+ren "%DEPS_DIR%\hdf5-hdf5-%HDF5_VERSION%" "hdf5-%HDF5_VERSION%"
+pushd "%DEPENDENCY_DIR%"
 call :RunCMake -DCMAKE_INSTALL_PREFIX="%INSTALL_DIR%\%HDF5_INSTALL_NAME%" ^
                -DHDF5_ENABLE_Z_LIB_SUPPORT=OFF -DBUILD_TESTING=OFF ^
                -DHDF5_BUILD_TOOLS=OFF -DHDF5_BUILD_EXAMPLES=OFF -DBUILD_SHARED_LIBS=OFF -DHDF5_BUILD_UTILS=OFF ^
@@ -388,6 +434,7 @@ call :DownloadFile https://github.com/nlohmann/json/releases/download/v3.6.1/jso
 :: Note OpenCOLLADA has only Release and Debug builds.
 set DEPENDENCY_NAME=OpenCOLLADA
 set DEPENDENCY_DIR=%DEPS_DIR%\OpenCOLLADA
+:: Always clone it, even if it's installed, because it contains xml headers we need.
 :: Use a fixed revision in order to prevent introducing breaking changes
 call :GitCloneAndCheckoutRevision https://github.com/KhronosGroup/OpenCOLLADA.git "%DEPENDENCY_DIR%" 064a60b65c2c31b94f013820856bc84fb1937cc6
 
@@ -501,31 +548,28 @@ set PYTHON_AMD64_POSTFIX=-amd64
 IF NOT %TARGET_ARCH%==x64 set PYTHON_AMD64_POSTFIX=
 set PYTHON_INSTALLER=python-%PYTHON_VERSION%%PYTHON_AMD64_POSTFIX%.exe
 
-IF "%IFCOS_INSTALL_PYTHON%"=="TRUE" (
-    cd "%DEPS_DIR%"
-    call :DownloadFile https://www.python.org/ftp/python/%PYTHON_VERSION%/%PYTHON_INSTALLER% "%DEPS_DIR%" %PYTHON_INSTALLER%
-    IF NOT %ERRORLEVEL%==0 GOTO :Error
-    REM Uninstall if build Rebuild/Clean used
-    IF NOT %BUILD_TYPE%==Build (
-        call cecho.cmd 0 13 "Uninstalling %DEPENDENCY_NAME%. Please be patient, this will take a while."
-        start /w %PYTHON_INSTALLER% /quiet /uninstall
-    )
-
-    IF NOT EXIST "%PYTHONHOME%". (
-        call cecho.cmd 0 13 "Installing %DEPENDENCY_NAME%. Please be patient, this will take a while."
-        start /w  %PYTHON_INSTALLER% /quiet TargetDir="%PYTHONHOME%"
-        if errorlevel 1 (
-            :: Standard installer doesn't support installing same Python version twice,
-            :: but we skip installation during IFCOS_INSTALL_PYTHON initialization.
-            call cecho.cmd 0 12 "Failed to install Python. Error code: !ERRORLEVEL!."
-            GOTO :Error
-        )
-    ) ELSE (
-        call cecho.cmd 0 13 "%DEPENDENCY_NAME% already installed. Skipping."
-    )
-) ELSE (
-    call cecho.cmd 0 13 "IFCOS_INSTALL_PYTHON not true, skipping installation of Python."
+IF NOT "%IFCOS_INSTALL_PYTHON%"=="TRUE" (
+    call cecho.cmd 0 13 "IFCOS_INSTALL_PYTHON not 'TRUE', skipping installation of Python."
+    goto :SWIG
 )
+
+:: nuget doesn't support providing architecture for packages.
+if NOT %TARGET_ARCH%==x64 (
+    call cecho.cmd 0 12 "Automatic insallation of Python for x86 builds is not supported,"
+    call cecho.cmd 0 12 "please install Python %PYTHON_VERSION% manually and ensure that it is available in PATH."
+    call cecho.cmd 0 12 "https://www.python.org/ftp/python/%PYTHON_VERSION%/%PYTHON_INSTALLER%"
+    goto :Error
+)
+
+
+if EXIST "%PYTHONHOME%" (
+    echo Found existing '%PYTHONHOME%', skipping installation.
+    goto :SWIG
+)
+
+"%NUGET_EXE%" install Python -Version %PYTHON_VERSION% -OutputDirectory "%DEPS_DIR%"
+IF NOT %ERRORLEVEL%==0 GOTO :Error
+
 
 :SWIG
 
@@ -534,21 +578,38 @@ IF EXIST "%INSTALL_DIR%\swigwin" (
     goto :cgal
 )
 
-set SWIG_VERSION=3.0.12
-set DEPENDENCY_NAME=SWIG %SWIG_VERSION%
-set DEPENDENCY_DIR=N/A
-set SWIG_ZIP=swigwin-%SWIG_VERSION%.zip
 cd "%DEPS_DIR%"
-call :DownloadFile https://github.com/aothms/swigwin-3.0.12/raw/refs/heads/main/swigwin-3.0.12.zip "%DEPS_DIR%" %SWIG_ZIP%
+
+:: Install bizon dependency for SWIG.
+set DEPENDENCY_NAME=win_flex_bison
+set WIN_FLEX_BIZON=win_flex_bison-2.5.25
+set WIN_FLEX_BIZON_ZIP=%WIN_FLEX_BIZON%.zip
+call :DownloadFile https://github.com/lexxmark/winflexbison/releases/download/v2.5.25/%WIN_FLEX_BIZON_ZIP% "%DEPS_DIR%" %WIN_FLEX_BIZON_ZIP%
 IF NOT %ERRORLEVEL%==0 GOTO :Error
-call :ExtractArchive %SWIG_ZIP% "%DEPS_DIR%" "%DEPS_DIR%\swigwin"
+echo test %WIN_FLEX_BIZON%
+call :ExtractArchive %WIN_FLEX_BIZON_ZIP% "%DEPS_DIR%\%WIN_FLEX_BIZON%" "%DEPS_DIR%\%WIN_FLEX_BIZON%"
 IF NOT %ERRORLEVEL%==0 GOTO :Error
-IF EXIST "%DEPS_DIR%\swigwin-%SWIG_VERSION%". (
-    pushd "%DEPS_DIR%"
-    ren swigwin-%SWIG_VERSION% swigwin
-    popd
-)
-IF EXIST "%DEPS_DIR%\swigwin\". robocopy "%DEPS_DIR%\swigwin" "%INSTALL_DIR%\swigwin" /E /IS /MOVE /njh /njs
+
+set SWIG_VERSION=4.3.0
+set DEPENDENCY_NAME=SWIG %SWIG_VERSION%
+set DEPENDENCY_DIR=%DEPS_DIR%\swig-%SWIG_VERSION%
+set SWIG_ZIP=swigwin-%SWIG_VERSION%.zip
+call :DownloadFile https://github.com/swig/swig/archive/refs/tags/v%SWIG_VERSION%.zip "%DEPS_DIR%" swig-%SWIG_VERSION%.zip
+IF NOT %ERRORLEVEL%==0 GOTO :Error
+
+call :ExtractArchive swig-%SWIG_VERSION%.zip "%DEPS_DIR%" "%DEPENDENCY_DIR%"
+IF NOT %ERRORLEVEL%==0 GOTO :Error
+cd "%DEPENDENCY_DIR%"
+
+call :RunCMake -DCMAKE_INSTALL_PREFIX="%INSTALL_DIR%\swigwin" ^
+               -DWITH_PCRE=OFF ^
+               -DBISON_EXECUTABLE="%DEPS_DIR%\%WIN_FLEX_BIZON%\win_bison.exe"
+IF NOT %ERRORLEVEL%==0 GOTO :Error
+call :BuildSolution "%DEPENDENCY_DIR%\%BUILD_DIR%\swig.sln" Release
+IF NOT %ERRORLEVEL%==0 GOTO :Error
+call :InstallCMakeProject "%DEPENDENCY_DIR%\%BUILD_DIR%" Release
+IF NOT %ERRORLEVEL%==0 GOTO :Error
+robocopy "%INSTALL_DIR%\swigwin\bin" "%INSTALL_DIR%\swigwin" /move /e
 
 :cgal
 
@@ -584,9 +645,71 @@ set DEPENDENCY_DIR=%INSTALL_DIR%\%DEPENDENCY_NAME%
 
 IF EXIST "%INSTALL_DIR%\%DEPENDENCY_NAME%" (
     echo Found existing "%INSTALL_DIR%\%DEPENDENCY_NAME%", skipping
-    goto :Successful
+    goto :zstd
 )
 call :GitCloneAndCheckoutRevision https://gitlab.com/libeigen/eigen.git "%DEPENDENCY_DIR%" 3.3.9
+
+:zstd
+set DEPENDENCY_NAME=zstd
+set ZSTD_VERSION=1.5.7
+set ZSTD_ZIP=zstd-%ZSTD_VERSION%.zip
+set DEPENDENCY_DIR=%DEPS_DIR%\%DEPENDENCY_NAME%-%ZSTD_VERSION%
+
+IF EXIST "%INSTALL_DIR%\%DEPENDENCY_NAME%" (
+    echo Found existing "%INSTALL_DIR%\%DEPENDENCY_NAME%", skipping
+    goto :rocksdb
+)
+
+cd %DEPS_DIR%
+call :DownloadFile ^
+    https://github.com/facebook/zstd/archive/refs/tags/v%ZSTD_VERSION%.zip ^
+    "%DEPS_DIR%" %ZSTD_ZIP%
+IF NOT %ERRORLEVEL%==0 GOTO :Error
+call :ExtractArchive %ZSTD_ZIP% "%DEPS_DIR%" "%DEPENDENCY_DIR%"
+IF NOT %ERRORLEVEL%==0 GOTO :Error
+cd "%DEPENDENCY_DIR%"\build\cmake
+call :RunCMake -DCMAKE_INSTALL_PREFIX="%INSTALL_DIR%\zstd" -DZSTD_BUILD_STATIC=ON -DZSTD_BUILD_SHARED=OFF
+IF NOT %ERRORLEVEL%==0 GOTO :Error
+call :BuildSolution "%DEPENDENCY_DIR%\build\cmake\%BUILD_DIR%\zstd.sln" %BUILD_CFG%
+IF NOT %ERRORLEVEL%==0 GOTO :Error
+call :InstallCMakeProject "%DEPENDENCY_DIR%\build\cmake\%BUILD_DIR%" %BUILD_CFG%
+IF NOT %ERRORLEVEL%==0 GOTO :Error
+
+:rocksdb
+set DEPENDENCY_NAME=rocksdb
+set ROCKSDB_VERSION=9.11.2
+set ROCKSDB_ZIP=rocksdb-%ROCKSDB_VERSION%.zip
+set DEPENDENCY_DIR=%DEPS_DIR%\%DEPENDENCY_NAME%-%ROCKSDB_VERSION%
+
+IF EXIST "%INSTALL_DIR%\%DEPENDENCY_NAME%" (
+    echo Found existing "%INSTALL_DIR%\%DEPENDENCY_NAME%", skipping
+    goto :Successful
+)
+
+cd %DEPS_DIR%
+call :DownloadFile ^
+    https://github.com/facebook/rocksdb/archive/refs/tags/v%ROCKSDB_VERSION%.zip ^
+    "%DEPS_DIR%" %ROCKSDB_ZIP%
+IF NOT %ERRORLEVEL%==0 GOTO :Error
+call :ExtractArchive %ROCKSDB_ZIP% "%DEPS_DIR%" "%DEPENDENCY_DIR%"
+IF NOT %ERRORLEVEL%==0 GOTO :Error
+cd "%DEPENDENCY_DIR%"
+:: see rocksdb\thirdparty.inc
+:: providing package is not supported on Windows.
+set ZSTD_INCLUDE=%INSTALL_DIR%\zstd\include
+set ZSTD_LIB_DEBUG=%INSTALL_DIR%\zstd\lib\zstd_static.lib
+set ZSTD_LIB_RELEASE=%INSTALL_DIR%\zstd\lib\zstd_static.lib
+call :RunCMake -DCMAKE_INSTALL_PREFIX="%INSTALL_DIR%\rocksdb" ^
+               -DROCKSDB_INSTALL_ON_WINDOWS=On ^
+               -DFAIL_ON_WARNINGS=Off ^
+               -DWITH_TESTS=OFF ^
+               -DWITH_ZSTD=On ^
+               -DPORTABLE=1
+IF NOT %ERRORLEVEL%==0 GOTO :Error
+call :BuildSolution "%DEPENDENCY_DIR%\%BUILD_DIR%\rocksdb.sln" %BUILD_CFG%
+IF NOT %ERRORLEVEL%==0 GOTO :Error
+call :InstallCMakeProject "%DEPENDENCY_DIR%\%BUILD_DIR%" %BUILD_CFG%
+IF NOT %ERRORLEVEL%==0 GOTO :Error
 
 :: :tbb
 :: set DEPENDENCY_NAME=tbb
@@ -669,6 +792,7 @@ exit /b %IFCOS_SCRIPT_RET%
 :: DownloadFile - Downloads a file using PowerShell
 :: Params: %1 url, %2 destinationDir, %3 filename
 :DownloadFile
+mkdir "%2"
 pushd "%2"
 if not exist "%~3". (
     call cecho.cmd 0 13 "Downloading %DEPENDENCY_NAME% into %~2."

@@ -23,6 +23,7 @@ import bpy
 import json
 import base64
 import ifcopenshell.api.sequence
+import ifcopenshell.util.element
 import pystache
 import mathutils
 import webbrowser
@@ -511,14 +512,12 @@ class Sequence(bonsai.core.tool.Sequence):
     @classmethod
     def get_task_inputs(cls, task: ifcopenshell.entity_instance) -> list[ifcopenshell.entity_instance]:
         props = cls.get_work_schedule_props()
-        is_deep = props.show_nested_inputs
-        return ifcopenshell.util.sequence.get_task_inputs(task, is_deep)
+        return ifcopenshell.util.sequence.get_task_inputs(task, is_recursive=props.show_nested_inputs)
 
     @classmethod
     def get_task_outputs(cls, task: ifcopenshell.entity_instance) -> list[ifcopenshell.entity_instance]:
         props = cls.get_work_schedule_props()
-        is_deep = props.show_nested_outputs
-        return ifcopenshell.util.sequence.get_task_outputs(task, is_deep)
+        return ifcopenshell.util.sequence.get_task_outputs(task, is_recursive=props.show_nested_outputs)
 
     @classmethod
     def are_entities_same_class(cls, entities: list[ifcopenshell.entity_instance]) -> bool:
@@ -539,8 +538,7 @@ class Sequence(bonsai.core.tool.Sequence):
         if not task:
             return
         props = cls.get_work_schedule_props()
-        is_deep = props.show_nested_resources
-        return ifcopenshell.util.sequence.get_task_resources(task, is_deep)
+        return ifcopenshell.util.sequence.get_task_resources(task, props.show_nested_resources)
 
     @classmethod
     def load_task_inputs(cls, inputs: list[ifcopenshell.entity_instance]) -> None:
@@ -1581,7 +1579,7 @@ class Sequence(bonsai.core.tool.Sequence):
     @classmethod
     def create_new_task_json(cls, task, json, type_map=None, baseline_schedule=None):
         task_time = task.TaskTime
-        resources = ifcopenshell.util.sequence.get_task_resources(task, is_deep=False)
+        resources = ifcopenshell.util.sequence.get_task_resources(task, is_recursive=False)
 
         string_resources = ""
         resources_usage = ""
@@ -1688,8 +1686,8 @@ class Sequence(bonsai.core.tool.Sequence):
     ) -> list[ifcopenshell.entity_instance]:
         products = []
         for task in ifcopenshell.util.sequence.get_root_tasks(work_schedule):
-            products.extend(ifcopenshell.util.sequence.get_task_inputs(task, is_deep=True))
-            products.extend(ifcopenshell.util.sequence.get_task_outputs(task, is_deep=True))
+            products.extend(ifcopenshell.util.sequence.get_task_inputs(task, is_recursive=True))
+            products.extend(ifcopenshell.util.sequence.get_task_outputs(task, is_recursive=True))
         return products
 
     @classmethod
@@ -1789,6 +1787,16 @@ class Sequence(bonsai.core.tool.Sequence):
         cls.load_task_resources(task)
 
     @classmethod
+    def select_active_task_elements(cls, task):
+        if not task:
+            return
+        bpy.ops.object.select_all(action="DESELECT")
+        props = cls.get_work_schedule_props()
+        for element in cls.get_task_inputs(task) | cls.get_task_outputs(task):
+            if obj := tool.Ifc.get_object(element):
+                obj.select_set(True)
+
+    @classmethod
     def refresh_task_resources(cls):
         task = cls.get_highlighted_task()
         if not task:
@@ -1879,3 +1887,14 @@ class Sequence(bonsai.core.tool.Sequence):
         ifc_file = tool.Ifc.get()
         new_schedule = ifcopenshell.api.sequence.copy_work_schedule(ifc_file, work_schedule)
         new_schedule.Name = (new_schedule.Name or "Unnamed") + " Copy"
+
+    @classmethod
+    def get_element_status(cls, element: ifcopenshell.entity_instance) -> set[str]:
+        psets = ifcopenshell.util.element.get_psets(element)
+        statuses: set[str] = set()
+        for pset_name, pset_data in psets.items():
+            if pset_name == "EPset_Status" or (pset_name.startswith("Pset_") and pset_name.endswith("Common")):
+                if pset_statuses := pset_data.get("Status", None):
+                    assert isinstance(pset_statuses, list)
+                    statuses.update(pset_statuses)
+        return statuses

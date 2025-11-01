@@ -243,6 +243,9 @@ class SequenceData:
             data["NestingIndex"] = None
             for rel in task.Nests or []:
                 data["NestingIndex"] = rel.RelatedObjects.index(task)
+            data["TotalInputs"] = len(tool.Sequence.get_task_inputs(task))
+            data["TotalOutputs"] = len(tool.Sequence.get_task_outputs(task))
+            data["TotalElements"] = data["TotalInputs"] + data["TotalOutputs"]
             cls.data["tasks"][task.id()] = data
 
     @classmethod
@@ -433,6 +436,7 @@ class StatusData:
         cls.is_loaded = True
         cls.data = {
             "statuses_with_elements": cls.statuses_with_elements(),
+            "active_element_status": cls.active_element_status(),
         }
 
     @classmethod
@@ -444,3 +448,9 @@ class StatusData:
             if tool.Sequence.get_elements_by_status(status):
                 statuses_used.add(status)
         return statuses_used
+
+    @classmethod
+    def active_element_status(cls) -> set[str]:
+        if not (obj := bpy.context.active_object) or not (element := tool.Ifc.get_entity(obj)):
+            return set()
+        return tool.Sequence.get_element_status(element)

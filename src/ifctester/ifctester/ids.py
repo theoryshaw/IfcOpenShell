@@ -63,6 +63,7 @@ def open(filepath: str, validate: bool = False) -> Ids:
 
 
 def from_string(xml: str, validate: bool = False) -> Ids:
+    tree = ET.ElementTree(ET.fromstring(xml))
     try:
         if validate:
             get_schema().validate(tree)
@@ -327,7 +328,7 @@ class Specification:
                 for facet in self.requirements:
                     facet.status = False
         elif self.maxOccurs == 0:  # Prohibited specification
-            if self.applicable_entities and not self.requirements:
+            if self.applicable_entities:
                 self.status = False
 
     def get_usage(self) -> Cardinality:

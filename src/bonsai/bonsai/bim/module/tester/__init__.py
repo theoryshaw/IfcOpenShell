@@ -21,7 +21,11 @@ from . import ui, prop, operator
 
 classes = (
     operator.ExecuteIfcTester,
+    operator.StartIfcTesterWebapp,
+    operator.StopIfcTesterWebapp,
+    operator.OpenIfcTesterWebapp,
     operator.SelectRequirement,
+    operator.ColorSpecefication,
     operator.SelectFailedEntities,
     operator.ExportBcf,
     prop.FailedEntities,

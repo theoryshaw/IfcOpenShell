@@ -43,6 +43,9 @@ endif
 ifeq ($(PYVERSION), py313)
 PYNUMBER:=313
 endif
+ifeq ($(PYVERSION), py314)
+PYNUMBER:=314
+endif
 ifndef PYNUMBER
 $(error Unsupported PYVERSION '$(PYVERSION)')
 endif
@@ -63,8 +66,9 @@ PLATFORMTAG:=win_amd64
 endif
 
 BINARY_VERSION:=0.8.4
-IOS_URL:=https://s3.amazonaws.com/ifcopenshell-builds/ifcopenshell-python-$(PYNUMBER)-v$(BINARY_VERSION)-358395c-$(PLATFORM).zip
-IFCCONVERT_URL:=https://s3.amazonaws.com/ifcopenshell-builds/IfcConvert-v$(BINARY_VERSION)-358395c-$(PLATFORM).zip
+BUILD_COMMIT:=6924012
+IOS_URL:=https://s3.amazonaws.com/ifcopenshell-builds/ifcopenshell-python-$(PYNUMBER)-v$(BINARY_VERSION)-$(BUILD_COMMIT)-$(PLATFORM).zip
+IFCCONVERT_URL:=https://s3.amazonaws.com/ifcopenshell-builds/IfcConvert-v$(BINARY_VERSION)-$(BUILD_COMMIT)-$(PLATFORM).zip
 
 .PHONY: build-urls
 build-urls:
@@ -75,6 +79,11 @@ build-urls:
 .PHONY: test
 test:
 	pytest -p no:pytest-blender test --ignore=test/util/test_shape_builder.py
+
+.PHONY: test-parallel
+test-parallel:
+	@NPROCS=$$(nproc 2>/dev/null || sysctl -n hw.ncpu); \
+	pytest -p no:pytest-blender -n $$NPROCS test --ignore=test/util/test_shape_builder.py
 
 .PHONY: test-mathutils
 test-mathutils:

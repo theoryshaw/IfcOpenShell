@@ -57,14 +57,13 @@ from collections.abc import Iterable, Callable, Generator, Sequence, Sized
 if TYPE_CHECKING:
     from sun_position.properties import SunPosProperties
     import bpy.stub_internal.rna_enums as rna_enums
-    from bonsai.bim.prop import BIMProperties, BIMObjectProperties
+    from bonsai.bim.prop import BIMProperties, BIMObjectProperties, BIMSnapProperties
     from bonsai.bim.module.attribute.prop import BIMAttributeProperties
     from bonsai.bim.module.constraint.prop import BIMConstraintProperties, BIMObjectConstraintProperties
     from bonsai.bim.module.covetool.prop import CoveToolProperties
     from bonsai.bim.module.csv.prop import CsvProperties
     from bonsai.bim.module.diff.prop import DiffProperties
     from bonsai.bim.module.fm.prop import BIMFMProperties
-    from bonsai.bim.module.group.prop import BIMGroupProperties
     from bonsai.bim.module.light.prop import BIMSolarProperties, RadianceExporterProperties
 
     T = TypeVar("T")
@@ -261,7 +260,7 @@ class Blender(bonsai.core.tool.Blender):
             wsprops = tool.Sequence.get_work_schedule_props()
             return wsprops.active_work_schedule_id
         elif obj_type == "Group":
-            props = tool.Blender.get_group_props()
+            props = tool.Group.get_group_props()
             assert (active_group := props.active_group)
             return active_group.ifc_definition_id
         elif obj_type == "Zone":
@@ -479,6 +478,8 @@ class Blender(bonsai.core.tool.Blender):
     def ensure_bin_in_path(cls) -> None:
         """Check 'bin' folder is in PATH, if not add for this session"""
         bin_dir = str(Path(__file__).parent.parent.resolve() / "libs" / "bin")
+        if not os.path.isdir(bin_dir):
+            return  # Maybe the user is using a system-wide Python package. See #7157.
         current_path = os.environ["PATH"]
         if bin_dir not in current_path:
             os.environ["PATH"] = current_path + os.pathsep + bin_dir
@@ -690,6 +691,29 @@ class Blender(bonsai.core.tool.Blender):
         context.view_layer.objects.active = active_object
         if active_object:
             active_object.select_set(True)
+
+    @classmethod
+    def validate_object_selection(
+        cls,
+        context: bpy.types.Context,
+        active_object: Union[bpy.types.Object, None] = None,
+        selected_objects: Sequence[bpy.types.Object] = (),
+    ) -> tuple[bpy.types.Context, Union[bpy.types.Object, None], list[bpy.types.Object]]:
+        """Validate object selection and return only valid objects.
+
+        Can be used before ``set_objects_selection`` to avoid errors
+        trying to select or set as active already removed objects
+        or objects that are not in the current view layer (their collection is unchecked).
+        """
+        assert context.view_layer
+        view_layer_objects = set(context.view_layer.objects)
+
+        new_selected_objects = [o for o in selected_objects if cls.is_valid_data_block(o) and o in view_layer_objects]
+
+        if active_object and (not cls.is_valid_data_block(active_object) or active_object not in view_layer_objects):
+            active_object = None
+
+        return context, active_object, new_selected_objects
 
     @classmethod
     def clear_objects_selection(cls) -> None:
@@ -1499,27 +1523,20 @@ class Blender(bonsai.core.tool.Blender):
         return bpy.context.preferences.addons[blender_package_name].preferences
 
     @classmethod
-    def get_sun_position_addon(cls) -> Union[types.ModuleType, None]:
-        # Check if it's installed as legacy Blender addon.
+    def get_addon(cls, name: str) -> Union[types.ModuleType, None]:
         import importlib
 
         try:
-            sun_position = importlib.import_module("sun_position")
+            return importlib.import_module(name)  # Legacy Blender addon
         except ImportError:
-            sun_position = None
-
-        if sun_position:
-            return sun_position
+            pass
 
         for package_name in bpy.context.preferences.addons.keys():
-            if package_name.endswith(".sun_position"):
+            if package_name.endswith(f".{name}"):
                 try:
-                    sun_position = importlib.import_module(package_name)
-                    return sun_position
+                    return importlib.import_module(package_name)
                 except ModuleNotFoundError:
                     pass
-
-        return sun_position
 
     @classmethod
     def get_sun_props(cls) -> Union[SunPosProperties, None]:
@@ -1576,6 +1593,11 @@ class Blender(bonsai.core.tool.Blender):
         return repr(bpy_struct)
 
     @classmethod
+    def get_props_attribute_name(cls, props: bpy.types.PropertyGroup) -> str:
+        """E.g. `bpy.data.objects['IfcAnnotation/TEXT'].BIMTextProperties` -> `BIMTextProperties`"""
+        return repr(props).rpartition(".")[-1]
+
+    @classmethod
     def resolve_data_path_to_data_attr(cls, data_path: str) -> tuple[bpy.types.bpy_struct, str]:
         """
         :param data_path: Non-full data path to attribute.
@@ -1585,8 +1607,8 @@ class Blender(bonsai.core.tool.Blender):
 
         :return: Resolved tuple of Blender Struct and property name.
         Examples:
-            - `(preferences.prop_group, "string_prop)`
-            - `(scene, "string_prop)`
+            - `(preferences.prop_group, "string_prop")`
+            - `(scene, "string_prop")`
 
         """
         # Get data to modify.
@@ -1768,11 +1790,6 @@ class Blender(bonsai.core.tool.Blender):
         return scene.DiffProperties  # pyright: ignore[reportAttributeAccessIssue]
 
     @classmethod
-    def get_group_props(cls) -> BIMGroupProperties:
-        assert (scene := bpy.context.scene)
-        return scene.BIMGroupProperties  # pyright: ignore[reportAttributeAccessIssue]
-
-    @classmethod
     def get_bim_props(cls, scene: Optional[bpy.types.Scene] = None) -> BIMProperties:
         if scene is None:
             assert (scene := bpy.context.scene)
@@ -1853,6 +1870,93 @@ class Blender(bonsai.core.tool.Blender):
             unit_scale = 0.3048
 
         return unit_scale
+
+    @classmethod
+    def reset_object_visibility(cls):
+        override = cls.get_viewport_context()
+        with bpy.context.temp_override(**override):
+            bpy.ops.object.hide_view_clear(select=False)
+
+    @classmethod
+    def isolate_objects(cls, objs):
+        previously_selected = {o.name for o in bpy.context.selected_objects}
+        previously_active = bpy.context.view_layer.objects.active
+
+        override = cls.get_viewport_context()
+        with bpy.context.temp_override(**override):
+            bpy.ops.object.hide_view_clear(select=False)
+
+        bpy.ops.object.select_all(action="DESELECT")
+        for obj in objs:
+            obj.select_set(True)
+        with bpy.context.temp_override(**override):
+            bpy.ops.object.hide_view_set(unselected=True)
+
+        bpy.ops.object.select_all(action="DESELECT")
+        for name in previously_selected:
+            obj = bpy.data.objects.get(name)
+            if obj:
+                obj.select_set(True)
+        bpy.context.view_layer.objects.active = previously_active
+
+    @classmethod
+    def sync_render_visibility(cls):
+        # Doing bpy.ops.object.hide_render_clear_all() or
+        # bpy.ops.object.isolate_type_render() is extremely slow.
+        # Hopefully this doesn't crash on Windows, it doesn't crash on Linux.
+        should_hides = [0 if obj.visible_get() else 1 for obj in bpy.data.objects]
+        should_hides = np.fromiter(should_hides, dtype=np.uint8, count=len(should_hides))
+        bpy.data.objects.foreach_set("hide_render", should_hides)
+        return  # Otherwise...
+        # for obj in bpy.data.objects:
+        #     if not obj.data:
+        #         continue
+        #     # For speed, check equality prior to change to prevent needless updates
+        #     if (is_visible := obj.visible_get()) and obj.hide_render is True:
+        #         obj.hide_render = False
+        #     elif not is_visible and obj.hide_render is False:
+        #         obj.hide_render = True
+
+    @classmethod
+    def hide_objects(cls, objs):
+        previously_selected = {o.name for o in bpy.context.selected_objects}
+        previously_active = bpy.context.view_layer.objects.active
+
+        override = cls.get_viewport_context()
+        bpy.ops.object.select_all(action="DESELECT")
+        for obj in objs:
+            obj.select_set(True)
+        with bpy.context.temp_override(**override):
+            bpy.ops.object.hide_view_set(unselected=False)
+
+        for name in previously_selected:
+            obj = bpy.data.objects.get(name)
+            if obj:
+                obj.select_set(True)
+        bpy.context.view_layer.objects.active = previously_active
+
+    @classmethod
+    def show_objects(cls, objs):
+        previously_selected = {o.name for o in bpy.context.selected_objects}
+        previously_active = bpy.context.view_layer.objects.active
+
+        bpy.ops.object.select_all(action="DESELECT")
+        override = cls.get_viewport_context()
+        with bpy.context.temp_override(**override):
+            bpy.ops.object.hide_view_clear(select=True)
+
+        for obj in bpy.context.selected_objects:
+            if obj in objs:
+                obj.select_set(False)
+        with bpy.context.temp_override(**override):
+            bpy.ops.object.hide_view_set(unselected=False)
+
+        bpy.ops.object.select_all(action="DESELECT")
+        for name in previously_selected:
+            obj = bpy.data.objects.get(name)
+            if obj:
+                obj.select_set(True)
+        bpy.context.view_layer.objects.active = previously_active
 
     @classmethod
     def validate_shader_batch_data(cls, pos: Any, indices: Optional[Any]) -> bool:

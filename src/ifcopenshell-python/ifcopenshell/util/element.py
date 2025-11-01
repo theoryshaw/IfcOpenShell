@@ -117,6 +117,7 @@ def get_pset(
         if (
             psets_only
             and not pset.is_a("IfcPropertySet")
+            and not pset.is_a("IfcPreDefinedPropertySet")
             and not (is_ifc2x3 and pset.is_a("IfcExtendedMaterialProperties"))
         ):
             pset = None
@@ -126,7 +127,11 @@ def get_pset(
     if type_pset is not None and not prop:
         if psets_only or qtos_only:
             type_pset_element = element.file.by_id(type_pset["id"])
-            if psets_only and not type_pset_element.is_a("IfcPropertySet"):
+            if (
+                psets_only
+                and not type_pset_element.is_a("IfcPropertySet")
+                and not type_pset_element.is_a("IfcPreDefinedPropertySet")
+            ):
                 type_pset = None
             elif qtos_only and not type_pset_element.is_a("IfcElementQuantity"):
                 type_pset = None
@@ -177,7 +182,7 @@ def get_psets(
     psets = {}
     if element.is_a("IfcTypeObject"):
         for definition in element.HasPropertySets or []:
-            if psets_only and not definition.is_a("IfcPropertySet"):
+            if psets_only and not definition.is_a("IfcPropertySet") and not definition.is_a("IfcPreDefinedPropertySet"):
                 continue
             if qtos_only and not definition.is_a("IfcElementQuantity"):
                 continue
@@ -213,7 +218,11 @@ def get_psets(
         for relationship in is_defined_by:
             if relationship.is_a("IfcRelDefinesByProperties"):
                 definition = relationship.RelatingPropertyDefinition
-                if psets_only and not definition.is_a("IfcPropertySet"):
+                if (
+                    psets_only
+                    and not definition.is_a("IfcPropertySet")
+                    and not definition.is_a("IfcPreDefinedPropertySet")
+                ):
                     continue
                 if qtos_only and not definition.is_a("IfcElementQuantity"):
                     continue
@@ -465,7 +474,7 @@ def get_elements_by_pset(pset: ifcopenshell.entity_instance) -> set[ifcopenshell
     """Retrieve the elements (or element types) that are using the provided property set."""
     is_ifc2x3 = pset.file.schema == "IFC2X3"
     elements = set()
-    if pset.is_a("IfcPropertySet") or pset.is_a("IfcElementQuantity"):
+    if pset.is_a("IfcPropertySet") or pset.is_a("IfcPreDefinedPropertySet") or pset.is_a("IfcElementQuantity"):
         rels = pset.PropertyDefinitionOf if is_ifc2x3 else pset.DefinesOccurrence
         for rel in rels:
             elements.update(rel.RelatedObjects)
@@ -563,6 +572,40 @@ def get_predefined_type(element: ifcopenshell.entity_instance) -> Union[str, Non
     if predefined_type == "USERDEFINED" or not predefined_type:
         predefined_type = getattr(element, "ObjectType", None)
     return predefined_type
+
+
+def is_userdefined_type(element: ifcopenshell.entity_instance) -> bool:
+    """Checks if the predefined type is userdefined
+
+    :param element: The IFC Element entity
+    :return: True if userdefined
+
+    Example:
+
+    .. code:: python
+
+        element = ifcopenshell.by_type("IfcWall")[0]
+        is_userdefined_type = ifcopenshell.util.element.is_userdefined_type(element)
+    """
+    if element_type := get_type(element):
+        predefined_type = getattr(element_type, "PredefinedType", None)
+        if predefined_type == "USERDEFINED":
+            return True
+        elif not predefined_type:
+            predefined_type = getattr(element_type, "ElementType", ...)
+            if predefined_type == ...:
+                predefined_type = getattr(element_type, "ProcessType", None)
+            if predefined_type:
+                return True
+        if predefined_type and predefined_type != "NOTDEFINED":
+            return False
+
+    predefined_type = getattr(element, "PredefinedType", None)
+    if predefined_type == "USERDEFINED":
+        return True
+    elif not predefined_type:
+        return bool(getattr(element, "ObjectType", None))
+    return False
 
 
 def get_type(element: ifcopenshell.entity_instance) -> Union[ifcopenshell.entity_instance, None]:
@@ -1167,6 +1210,25 @@ def get_groups(element: ifcopenshell.entity_instance) -> list[ifcopenshell.entit
         if rel.is_a("IfcRelAssignsToGroup"):
             groups.append(rel.RelatingGroup)
     return groups
+
+
+def get_controls(element: ifcopenshell.entity_instance) -> Generator[ifcopenshell.entity_instance]:
+    """
+    Retrieves the controls of an element.
+
+    :param element: The IFC element
+    :return: Generator of IfcControl elements assigned to the element.
+
+    Example:
+
+    .. code:: python
+
+        task = file.by_type("IfcTask")[0]
+        control = ifcopenshell.util.element.get_controls(task)[0]
+    """
+    for rel in element.HasAssignments:
+        if rel.is_a("IfcRelAssignsToControl"):
+            yield rel.RelatingControl
 
 
 def get_parent(element: ifcopenshell.entity_instance) -> Union[ifcopenshell.entity_instance, None]:

@@ -36,16 +36,6 @@ FLOW_DIRECTION_TO_ICON = {
     "NOTDEFINED": "CHECKBOX_DEHLT",
 }
 
-SYSTEM_ICONS = {
-    "IfcSystem": "EXTERNAL_DRIVE",
-    "IfcDistributionSystem": "NETWORK_DRIVE",
-    "IfcDistributionCircuit": "DRIVER",
-    "IfcBuildingSystem": "MOD_BUILD",
-    "IfcBuiltSystem": "MOD_BUILD",
-    "IfcZone": "CUBE",
-}
-SYSTEM_ICONS["IfcElectricalCircuit"] = SYSTEM_ICONS["IfcDistributionCircuit"]
-
 
 class BIM_PT_systems(Panel):
     bl_label = "Systems"
@@ -66,6 +56,7 @@ class BIM_PT_systems(Panel):
         if not ObjectSystemData.is_loaded:
             ObjectSystemData.load()
 
+        assert self.layout
         self.props = tool.System.get_system_props()
         active_system_item = self.props.active_system_ui_item
         row = self.layout.row(align=True)
@@ -91,12 +82,15 @@ class BIM_PT_systems(Panel):
         row = self.layout.row(align=True)
         row.label(text="{} Systems Found in Project".format(SystemData.data["total_systems"]), icon="OUTLINER")
         if self.props.is_editing:
+            row.operator("bim.add_system", text="", icon="ADD")
             row.operator("bim.disable_system_editing_ui", text="", icon="CANCEL")
 
             row = self.layout.row(align=True)
             prop_with_search(row, self.props, "system_class", text="")
-            row.operator("bim.add_system", text="", icon="ADD")
             if active_system_item:
+                op = row.operator("bim.add_system", text="", icon="ADD")
+                op.parent_system_id = active_system_item.ifc_definition_id
+
                 system_id = active_system_item.ifc_definition_id
                 op = row.operator("bim.select_system_products", text="", icon="RESTRICT_SELECT_OFF")
                 op.system = system_id
@@ -424,13 +418,25 @@ class BIM_UL_systems(UIList):
         icon,
         active_data,
         active_propname,
-    ):
+    ) -> None:
         if item:
             row = layout.row(align=True)
+            for i in range(0, item.tree_depth):
+                row.label(text="", icon="BLANK1")
             system_id = item.ifc_definition_id
+            if item.has_children:
+                op = row.operator(
+                    "bim.toggle_group",
+                    text="",
+                    icon="TRIA_DOWN" if item.is_expanded else "TRIA_RIGHT",
+                    emboss=False,
+                )
+                op.group_type = "IfcSystem"
+                op.ifc_definition_id = item.ifc_definition_id
+                op.option = "COLLAPSE" if item.is_expanded else "EXPAND"
             if data.edited_system_id == system_id:
                 row.label(text="", icon="GREASEPENCIL")
-            row.prop(item, "name", text="", icon=SYSTEM_ICONS[item.ifc_class], emboss=False)
+            row.prop(item, "name", text="", icon=tool.System.SYSTEM_ICONS[item.ifc_class], emboss=False)
 
 
 class BIM_UL_zones(UIList):

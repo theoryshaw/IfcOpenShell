@@ -203,6 +203,7 @@ class AssignClass(bpy.types.Operator, tool.Ifc.Operator):
         predefined_type: str
         userdefined_type: str
         context_id: int
+        props_to_pset: bool
         should_add_representation: bool
         ifc_representation_class: str
 
@@ -316,6 +317,7 @@ class AssignClass(bpy.types.Operator, tool.Ifc.Operator):
                         f"Mesh '{obj.data.name}' has loose geometry, loose geometry will be ignored to save mesh to IFC as a tessellation.",
                     )
 
+                representation = tool.Geometry.export_mesh_to_tessellation(obj, ifc_context)
                 element = core.assign_class(
                     tool.Ifc,
                     tool.Collector,
@@ -325,16 +327,9 @@ class AssignClass(bpy.types.Operator, tool.Ifc.Operator):
                     predefined_type=predefined_type,
                     should_add_representation=False,
                 )
-                representation = tool.Geometry.export_mesh_to_tessellation(obj, ifc_context)
                 ifcopenshell.api.geometry.assign_representation(tool.Ifc.get(), element, representation)
                 bonsai.core.geometry.switch_representation(
-                    tool.Ifc,
-                    tool.Geometry,
-                    obj=obj,
-                    representation=representation,
-                    should_reload=True,
-                    is_global=True,
-                    should_sync_changes_first=False,
+                    tool.Ifc, tool.Geometry, obj=obj, representation=representation
                 )
             else:
 
@@ -385,13 +380,8 @@ class AssignClass(bpy.types.Operator, tool.Ifc.Operator):
         # TODO: reload representation might lead to the object being replaced by object of the other type.
         # We probably should track it somehow and keep the original selection.
 
-        # Validation selection.
-        new_selected_objects = list(filter(tool.Blender.is_valid_data_block, current_selection[2]))
-        active_object = current_selection[1]
-        if active_object and not tool.Blender.is_valid_data_block(active_object):
-            active_object = None
-        current_selection = (current_selection[0], active_object, new_selected_objects)
-
+        # Validate selection and reapply it.
+        current_selection = tool.Blender.validate_object_selection(*current_selection)
         tool.Blender.set_objects_selection(*current_selection)
 
 
@@ -583,9 +573,6 @@ class AddElement(bpy.types.Operator, tool.Ifc.Operator):
                 tool.Geometry,
                 obj=obj,
                 representation=representation,
-                should_reload=True,
-                is_global=True,
-                should_sync_changes_first=False,
             )
             if not tool.Ifc.get_entity(props.representation_obj):
                 bpy.data.objects.remove(props.representation_obj)
@@ -605,9 +592,6 @@ class AddElement(bpy.types.Operator, tool.Ifc.Operator):
                 tool.Geometry,
                 obj=obj,
                 representation=representation,
-                should_reload=True,
-                is_global=True,
-                should_sync_changes_first=False,
             )
         elif representation_template == "EXTRUSION":
             builder = ifcopenshell.util.shape_builder.ShapeBuilder(tool.Ifc.get())
@@ -654,9 +638,6 @@ class AddElement(bpy.types.Operator, tool.Ifc.Operator):
                 tool.Geometry,
                 obj=obj,
                 representation=representation,
-                should_reload=True,
-                is_global=True,
-                should_sync_changes_first=False,
             )
         elif representation_template in ("LAYERSET_AXIS2", "LAYERSET_AXIS3"):
             unit_scale = ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get())
@@ -767,9 +748,6 @@ class AddElement(bpy.types.Operator, tool.Ifc.Operator):
                 tool.Geometry,
                 obj=obj,
                 representation=representation,
-                should_reload=True,
-                is_global=True,
-                should_sync_changes_first=False,
             )
         elif representation_template == "EDGE":
             builder = ifcopenshell.util.shape_builder.ShapeBuilder(tool.Ifc.get())
@@ -782,9 +760,6 @@ class AddElement(bpy.types.Operator, tool.Ifc.Operator):
                 tool.Geometry,
                 obj=obj,
                 representation=representation,
-                should_reload=True,
-                is_global=True,
-                should_sync_changes_first=False,
             )
         elif representation_template == "FACE":
             builder = ifcopenshell.util.shape_builder.ShapeBuilder(tool.Ifc.get())
@@ -797,9 +772,6 @@ class AddElement(bpy.types.Operator, tool.Ifc.Operator):
                 tool.Geometry,
                 obj=obj,
                 representation=representation,
-                should_reload=True,
-                is_global=True,
-                should_sync_changes_first=False,
             )
 
         bpy.context.view_layer.update()  # Ensures obj.matrix_world is correct

@@ -87,7 +87,7 @@ BLENDER_PLATFORM:=windows-x64
 endif
 
 # Current build commit hash.
-OLD:=358395c
+OLD:=6924012
 .PHONY: bump
 bump:
 ifndef NEW
@@ -127,7 +127,7 @@ endif
 	cd build && . env/$(VENV_ACTIVATE) && $(PIP) download GitPython --dest=./wheels
 	# Provides audio playback for costing
 	# This is a REALLY IMPORTANT feature
-	cd build && . env/$(VENV_ACTIVATE) && $(PIP) wheel git+https://github.com/Andrej730/aud.git --wheel-dir=./wheels
+	cd build && . env/$(VENV_ACTIVATE) && $(PIP) wheel git+https://github.com/zdhoward/aud --wheel-dir=./wheels
 	# IfcOpenShell dependency - support for new typing features
 	cd build && . env/$(VENV_ACTIVATE) && $(PIP) download typing_extensions --dest=./wheels
 	# Required by IfcCSV
@@ -192,6 +192,8 @@ else ifeq ($(PLATFORM), macos)
 else
 	cd build && . env/$(VENV_ACTIVATE) && $(PIP) download pyradiance $(PYPI_PLATFORM) --python-version $(PYPI_VERSION) --implementation $(PYPI_IMP) --only-binary=:all: --dest=./wheels
 endif
+	# Required by ifctester web ui.
+	cd build && . env/$(VENV_ACTIVATE) && $(PIP) download flask $(PYPI_PLATFORM) --python-version $(PYPI_VERSION) --implementation $(PYPI_IMP) --only-binary=:all: --dest=./wheels
 
 	# jQuery is required for web UI functionality
 	cd build/bonsai/bim/data/webui/static/js/ && wget https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js

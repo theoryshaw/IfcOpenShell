@@ -39,8 +39,7 @@ def disable_editing_text(drawing: type[tool.Drawing], obj: bpy.types.Object) -> 
 def edit_text(drawing: type[tool.Drawing], obj: bpy.types.Object) -> None:
     drawing.synchronise_ifc_and_text_attributes(obj)
     drawing.update_text_size_pset(obj)
-    drawing.update_newline_at(obj)
-    drawing.update_text_value(obj)
+    drawing.update_text_annotation_properties(obj)
     drawing.disable_editing_text(obj)
 
 
@@ -67,8 +66,6 @@ def edit_assigned_product(
             ifc.run("drawing.unassign_product", relating_product=existing_product, related_object=element)
         if product:
             ifc.run("drawing.assign_product", relating_product=product, related_object=element)
-        if drawing.is_annotation_object_type(element, ("TEXT", "TEXT_LEADER")):
-            drawing.update_text_value(obj)
 
     drawing.disable_editing_assigned_product(obj)
 
@@ -111,10 +108,6 @@ def add_sheet(ifc: type[tool.Ifc], drawing: type[tool.Drawing], titleblock: ifco
 def regenerate_sheet(
     drawing: type[tool.Drawing], sheet: ifcopenshell.entity_instance
 ) -> Union[list[tool.Drawing.SheetWarningType], None]:
-    warnings = drawing.validate_sheet_files(sheet)
-    if warnings:
-        return warnings
-
     titleblock_uri = drawing.get_document_uri(sheet, "TITLEBLOCK")
     assert titleblock_uri
 
@@ -200,7 +193,7 @@ def disable_editing_references(drawing: type[tool.Drawing]) -> None:
 
 
 def add_document(
-    ifc: type[tool.Ifc], drawing: type[tool.Drawing], document_type: type[tool.Drawing].DOCUMENT_TYPE, uri: str
+    ifc: type[tool.Ifc], drawing: type[tool.Drawing], document_type: tool.Drawing.DOCUMENT_TYPE, uri: str
 ) -> None:
     document = ifc.run("document.add_information")
     reference = ifc.run("document.add_reference", information=document)
@@ -217,7 +210,7 @@ def add_document(
 def remove_document(
     ifc: type[tool.Ifc],
     drawing: type[tool.Drawing],
-    document_type: type[tool.Drawing].DOCUMENT_TYPE,
+    document_type: tool.Drawing.DOCUMENT_TYPE,
     document: ifcopenshell.entity_instance,
 ) -> None:
     ifc.run("document.remove_information", information=document)
@@ -323,6 +316,7 @@ def duplicate_drawing(
 ) -> ifcopenshell.entity_instance:
     drawing_name = drawing_tool.ensure_unique_drawing_name(drawing_tool.get_name(drawing))
     new_drawing = ifc.run("root.copy_class", product=drawing)
+    drawing_tool.clear_annotation_relationships(new_drawing)
     drawing_tool.copy_representation(drawing, new_drawing)
     drawing_tool.set_name(new_drawing, drawing_name)
     group = drawing_tool.get_drawing_group(new_drawing)
@@ -443,8 +437,7 @@ def add_annotation(
     drawing_tool.show_decorations()
     obj = drawing_tool.create_annotation_object(drawing, object_type)
     element = ifc.get_entity(obj)
-    # TODO: element is never None?
-    if not element:
+    if not element:  # Brand new annotation
         relating_type_rep = drawing_tool.get_annotation_representation(relating_type) if relating_type else None
         element = drawing_tool.run_root_assign_class(
             obj=obj,
@@ -479,45 +472,43 @@ def sync_references(
     if not drawing_tool.has_annotation(drawing):
         return
 
-    context = drawing_tool.get_annotation_context(drawing_tool.get_drawing_target_view(drawing))
-    if not context:
+    if not (context := drawing_tool.get_annotation_context(drawing_tool.get_drawing_target_view(drawing))):
         return
 
     group = drawing_tool.get_drawing_group(drawing)
-    for reference_element in drawing_tool.get_potential_reference_elements(drawing):
+    potential_reference_elements = drawing_tool.get_potential_reference_elements(drawing)
+
+    for element in potential_reference_elements:
+        if (obj := ifc.get_object(element)) and ifc.is_moved(obj):
+            drawing_tool.sync_object_placement(obj)
+
+    for element in drawing_tool.get_group_elements(group):
+        if not drawing_tool.is_auto_annotation(element):
+            continue
+        if (obj := ifc.get_object(element)) and ifc.is_moved(obj):
+            drawing_tool.sync_object_placement(obj)
+        if not (reference_element := drawing_tool.get_assigned_product(element)):
+            if obj := ifc.get_object(element):
+                drawing_tool.delete_object(obj)
+            ifc.run("root.remove_product", product=element)
+            continue
         reference_obj = ifc.get_object(reference_element)
-        annotation = drawing_tool.get_drawing_reference_annotation(drawing, reference_element)
+        if reference_element not in potential_reference_elements:
+            # It was auto created, so it makes sense to auto delete
+            if obj := ifc.get_object(element):
+                drawing_tool.delete_object(obj)
+            ifc.run("root.remove_product", product=element)
+        elif not drawing_tool.regenerate_reference_annotation(drawing, element, reference_element, context):
+            if obj := ifc.get_object(element):
+                drawing_tool.delete_object(obj)
+            ifc.run("root.remove_product", product=element)
 
-        should_delete_existing_annotation = False
-        should_create_annotation = False
-
-        # remove annotation only if the reference object was changed
-        # otherwise we rely on the existing annotation
-        if annotation:
-            if reference_obj and (ifc.is_moved(reference_obj) or ifc.is_edited(reference_obj)):
-                should_delete_existing_annotation = True
-
-        if should_delete_existing_annotation or not annotation:
-            should_create_annotation = True
-
-        if should_delete_existing_annotation:
-            annotation_obj = ifc.get_object(annotation)
-            if annotation_obj:
-                drawing_tool.delete_object(annotation_obj)
-            ifc.run("root.remove_product", product=annotation)
-
-        if should_create_annotation:
-            annotation = drawing_tool.generate_reference_annotation(drawing, reference_element, context)
-            if annotation:
+    for reference_element in potential_reference_elements:
+        if not drawing_tool.get_drawing_reference_annotation(drawing, reference_element):
+            if annotation := drawing_tool.generate_reference_annotation(drawing, reference_element, context):
                 ifc.run("drawing.assign_product", relating_product=reference_element, related_object=annotation)
                 ifc.run("group.assign_group", group=group, products=[annotation])
                 collector.assign(ifc.get_object(annotation))
-
-        if reference_obj and ifc.is_moved(reference_obj):
-            drawing_tool.sync_object_placement(reference_obj)
-
-        if reference_obj and ifc.is_edited(reference_obj):
-            drawing_tool.sync_object_representation(reference_obj)
 
 
 def select_assigned_product(drawing: type[tool.Drawing], context: bpy.types.Context) -> None:

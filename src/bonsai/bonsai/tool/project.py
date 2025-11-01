@@ -21,6 +21,7 @@ import os
 import bpy
 import ifcopenshell
 import ifcopenshell.api.document
+import ifcopenshell.util.element
 import ifcopenshell.util.representation
 import ifcopenshell.util.unit
 import bonsai.core.aggregate
@@ -35,7 +36,7 @@ from collections import defaultdict
 from bonsai.bim.ifc import IfcStore
 from ifcopenshell.api.project.append_asset import APPENDABLE_ASSET_TYPES
 from pathlib import Path
-from typing import Optional, Union, TYPE_CHECKING
+from typing import NamedTuple, Optional, Union, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from bonsai.bim.module.project.prop import BIMProjectProperties, MeasureToolSettings
@@ -398,3 +399,106 @@ class Project(bonsai.core.tool.Project):
         if library_element.is_a("IfcProfileDef"):
             return "ProfileName"
         return "Name"
+
+    # TODO: Move to ifcopenshell.api and add tests.
+    @classmethod
+    def remove_project_library(cls, project_library: ifcopenshell.entity_instance) -> None:
+        ifc_file = project_library.file
+        roots_to_remove = {project_library}
+        rels_to_clean_up: set[ifcopenshell.entity_instance] = set()
+        queue = [project_library]
+        while queue:
+            current = queue.pop()
+            inverses = ifc_file.get_inverse(current)
+            rels_to_clean_up.update(i for i in inverses if i.is_a() in ("IfcRelNests", "IfcRelDeclares"))
+
+            children = ifcopenshell.util.element.get_components(current)
+            queue.extend(children)
+            roots_to_remove.update(children)
+
+        def remove_root(root: ifcopenshell.entity_instance) -> None:
+            history = root.OwnerHistory
+            ifc_file.remove(root)
+            if history:
+                ifcopenshell.util.element.remove_deep2(ifc_file, history)
+
+        for root in roots_to_remove:
+            remove_root(root)
+
+        # Clean up invalidated rels.
+        for rel in rels_to_clean_up:
+            if rel.is_a("IfcRelDeclares"):
+                # Project library was either assigned to Project or some types were assigned to it.
+                if not rel.RelatingContext or not rel.RelatedDefinitions:
+                    remove_root(rel)
+            elif rel.is_a("IfcRelNests"):
+                # Project library was either parent or child to other project libraries.
+                if not rel.RelatingObject or not rel.RelatedObjects:
+                    remove_root(rel)
+            else:
+                assert False, f"Shouldn't be here, {rel}"
+
+    class HeaderData(NamedTuple):
+        mvd: str
+        author_name: str
+        author_email: str
+        organisation_name: str
+        organisation_email: str
+        authorisation: str
+
+    @classmethod
+    def get_header_data(cls) -> HeaderData:
+        assert (ifc_file := tool.Ifc.get())
+
+        # MVD.
+        if isinstance(ifc_file, ifcopenshell.sqlite):
+            mvd = ifc_file.mvd_str
+        else:
+            mvd = "".join(ifc_file.header.file_description.description)
+        if f"[" in mvd:
+            mvd = mvd.split("[")[1][0:-1]
+
+        # Author.
+        author = ifc_file.header.file_name.author
+        author_name, author_email = "", ""
+        if author:
+            author_name = author[0]
+            if len(author) > 1:
+                author_email = author[1]
+
+        # Organization.
+        organization_name, organization_email = "", ""
+        organization = ifc_file.header.file_name.organization
+        if organization:
+            organization_name = organization[0]
+            if len(organization) > 1:
+                organization_email = organization[1]
+
+        authorization = ifc_file.header.file_name.authorization or ""
+        return cls.HeaderData(
+            mvd=mvd,
+            author_name=author_name,
+            author_email=author_email,
+            organisation_name=organization_name,
+            organisation_email=organization_email,
+            authorisation=authorization,
+        )
+
+    @classmethod
+    def get_clipping_planes_normals(cls):
+        normals = []
+        for clipping_plane in tool.Project.get_project_props().clipping_planes:
+            plane = clipping_plane.obj
+            if not plane or not plane.data:
+                continue
+
+            if plane.mode == "EDIT":
+                continue  # A profile decorator or something else is used here.
+
+            v1 = plane.matrix_world @ plane.data.vertices[0].co
+            v2 = plane.matrix_world @ plane.data.vertices[1].co
+            v3 = plane.matrix_world @ plane.data.vertices[2].co
+            d1 = v1 - v2
+            d2 = v3 - v2
+            normals.append((v1, d1.cross(d2).normalized()))
+        return normals

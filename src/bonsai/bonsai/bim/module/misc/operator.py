@@ -193,9 +193,6 @@ class SplitAlongEdge(bpy.types.Operator, tool.Ifc.Operator):
                 tool.Geometry,
                 obj=obj,
                 representation=representation,
-                should_reload=True,
-                is_global=True,
-                should_sync_changes_first=False,
                 apply_openings=False,
             )
 
@@ -224,9 +221,6 @@ class SplitAlongEdge(bpy.types.Operator, tool.Ifc.Operator):
                 tool.Geometry,
                 obj=obj,
                 representation=representation,
-                should_reload=True,
-                is_global=True,
-                should_sync_changes_first=False,
                 apply_openings=True,
             )
 

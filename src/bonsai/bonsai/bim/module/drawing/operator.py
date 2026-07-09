@@ -126,7 +126,7 @@ class AddAnnotationType(bpy.types.Operator, tool.Ifc.Operator):
         element.ApplicableOccurrence = f"IfcAnnotation/{object_type}"
 
         if props.create_representation_for_type and object_type == "IMAGE":
-            bpy.ops.bim.add_reference_image("INVOKE_DEFAULT", existing_object_by_name=obj.name)
+            bpy.ops.bim.add_reference_image("INVOKE_DEFAULT")
 
 
 class EnableAddAnnotationType(bpy.types.Operator):
@@ -2736,7 +2736,7 @@ class AddAnnotation(bpy.types.Operator, tool.Ifc.Operator):
             enable_editing=object_type not in ("ELEVATION", "SECTION"),
         )
         if object_type == "IMAGE":
-            bpy.ops.bim.add_reference_image("INVOKE_DEFAULT", existing_object_by_name=obj.name)
+            bpy.ops.bim.add_reference_image("INVOKE_DEFAULT")
         if is_manual:
             element = tool.Ifc.get_entity(obj)
             tool.Drawing.set_manual_drawing_reference(element)

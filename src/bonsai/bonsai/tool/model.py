@@ -1308,6 +1308,35 @@ class Model(bonsai.core.tool.Model):
             cls._regenerate_array_body(parent_obj, data, array_layers_to_apply)
 
     @classmethod
+    def _prune_orphan_array_children(cls, array: dict[str, Any]) -> None:
+        """Drop GUIDs from ``array['children']`` whose IFC entity or Blender
+        object is no longer alive, and cascade-remove the orphan IFC entity
+        if it still exists. Outliner / keyboard delete of a Bonsai-managed
+        object bypasses ``bim.delete``'s cascade, leaving dangling opening
+        and filling references that later confuse regen and crash the
+        ``batch_host_recut`` drain."""
+        live_guids: list[str] = []
+        ifc_file = tool.Ifc.get()
+        for guid in array["children"]:
+            try:
+                element = ifc_file.by_guid(guid)
+            except RuntimeError:
+                continue
+            obj = tool.Ifc.get_object(element)
+            try:
+                is_live = obj is not None and obj.data is not None
+            except ReferenceError:
+                is_live = False
+            if is_live:
+                live_guids.append(guid)
+                continue
+            try:
+                ifcopenshell.api.root.remove_product(ifc_file, product=element)
+            except (RuntimeError, ifcopenshell.Error):
+                pass
+        array["children"] = live_guids
+
+    @classmethod
     def _regenerate_array_body(
         cls, parent_obj: bpy.types.Object, data: list[dict[str, Any]], array_layers_to_apply: Iterable[int]
     ) -> None:
@@ -1322,6 +1351,7 @@ class Model(bonsai.core.tool.Model):
         obj_stack = [parent_obj]
 
         for array_i, array in enumerate(data):
+            cls._prune_orphan_array_children(array)
             child_i = 0
             existing_children = set(array["children"])
             total_existing_children = len(array["children"])

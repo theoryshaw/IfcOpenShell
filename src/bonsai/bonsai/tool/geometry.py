@@ -163,13 +163,21 @@ class Geometry(bonsai.core.tool.Geometry):
                 cls._host_update_queue = {}
                 cls._host_recut_queue = {}
                 for voided_obj in update_queue.values():
-                    if not voided_obj or not voided_obj.data:
+                    try:
+                        if not voided_obj or not voided_obj.data:
+                            continue
+                    except ReferenceError:
+                        # Blender object was deleted while the batch was open
+                        # (e.g. user removed it via the outliner mid-op).
                         continue
                     if tool.Ifc.get_entity(voided_obj) is None:
                         continue
                     bpy.ops.bim.update_representation(obj=voided_obj.name)
                 for voided_obj, _ in recut_queue.values():
-                    if not voided_obj or not voided_obj.data:
+                    try:
+                        if not voided_obj or not voided_obj.data:
+                            continue
+                    except ReferenceError:
                         continue
                     if tool.Ifc.get_entity(voided_obj) is None:
                         continue

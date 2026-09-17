@@ -390,3 +390,32 @@ class TestFindDrawingGroup:
             tmp_path, monkeypatch, first="3729889", second="3729890", drawing="ELEVATION - NORTH.svg"
         )
         assert builder.find_drawing_group(root, layout_path, _FakeReference(101)) is None
+
+
+# ---------------------------------------------------------------------------
+# as_template_data - values for tools that render sheet templates themselves
+# ---------------------------------------------------------------------------
+
+
+class TestAsTemplateData:
+    """Values must render as pystache would render them, and survive JSON."""
+
+    def _convert(self, value):
+        from bonsai.bim.module.drawing import sheeter
+
+        return sheeter.as_template_data(value)
+
+    def test_scalars_become_text_as_pystache_prints_them(self):
+        assert self._convert({"Name": None, "Scale": 1.0, "id": 5}) == {"Name": "None", "Scale": "1.0", "id": "5"}
+
+    def test_booleans_stay_booleans_for_sections(self):
+        assert self._convert({"has_revisions": False}) == {"has_revisions": False}
+
+    def test_rows_stay_a_list_even_when_empty(self):
+        # An empty list turned into the text "[]" would be truthy, and a
+        # {{#revisions}} section would render once for nothing.
+        assert self._convert({"revisions": []}) == {"revisions": []}
+        assert self._convert({"revisions": [{"rev": "v1", "y": 0}]}) == {"revisions": [{"rev": "v1", "y": "0"}]}
+
+    def test_other_sequences_are_text(self):
+        assert self._convert({"Editors": ()}) == {"Editors": "()"}

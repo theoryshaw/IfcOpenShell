@@ -59,6 +59,22 @@ URL_ATTRIBUTES = (
 )
 
 
+def as_template_data(value):
+    """A value as a sheet template sees it, in a form that survives JSON.
+
+    pystache renders a variable with str(), so everything becomes text - an unset
+    attribute is "None" - except what templates test and iterate: booleans, and
+    lists of rows such as the titleblock's revisions.
+    """
+    if isinstance(value, dict):
+        return {k: as_template_data(v) for k, v in value.items()}
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, list) and all(isinstance(v, dict) for v in value):
+        return [as_template_data(v) for v in value]
+    return str(value)
+
+
 class SheetBuilder:
     def __init__(self):
         self.scale = "NTS"
@@ -599,27 +615,42 @@ class SheetBuilder:
             if view_title is not None:
                 assert foreground is not None
                 foreground_path = self.get_href(foreground)
-                data = reference.get_info()
-                data.update({"Sheet" + k: v for k, v in sheet.get_info().items()})
-                if not data["Name"]:
-                    data["Name"] = drawing.Name or ntpath.basename(foreground_path)[0:-4]
-
-                # If a perspective drawing, don't add scale to view title
-                try:
-                    is_perspective = (
-                        drawing.Representation.Representations[0]
-                        .Items[0]
-                        .TreeRootExpression.FirstOperand.is_a("IfcRectangularPyramid")
-                    )
-                except AttributeError:
-                    is_perspective = False
-
-                if not is_perspective:
-                    data["Scale"] = tool.Drawing.get_drawing_human_scale(drawing)
+                data = self.get_drawing_view_title_data(reference, sheet, drawing, foreground_path)
                 view.append(self.parse_embedded_svg(view_title, data))
 
             for image in images:
                 view.remove(image)
+
+    def get_drawing_view_title_data(
+        self,
+        reference: ifcopenshell.entity_instance,
+        sheet: ifcopenshell.entity_instance,
+        drawing: ifcopenshell.entity_instance,
+        foreground_path: str,
+    ) -> dict:
+        """Template data for a drawing's view-title.
+
+        Shared by `build_drawings` and `get_template_values`, so a tool showing a
+        sheet without building it fills the title exactly as a build would.
+        """
+        data = reference.get_info()
+        data.update({"Sheet" + k: v for k, v in sheet.get_info().items()})
+        if not data["Name"]:
+            data["Name"] = drawing.Name or ntpath.basename(foreground_path)[0:-4]
+
+        # If a perspective drawing, don't add scale to view title
+        try:
+            is_perspective = (
+                drawing.Representation.Representations[0]
+                .Items[0]
+                .TreeRootExpression.FirstOperand.is_a("IfcRectangularPyramid")
+            )
+        except AttributeError:
+            is_perspective = False
+
+        if not is_perspective:
+            data["Scale"] = tool.Drawing.get_drawing_human_scale(drawing)
+        return data
 
     def build_documents(self, root: ET.Element, sheet: ifcopenshell.entity_instance) -> None:
         schedules = root.findall(f'{SVG}g[@data-type="schedule"]')
@@ -651,18 +682,141 @@ class SheetBuilder:
 
             if view_title is not None:
                 path = self.get_href(table)
-                data = reference.get_info()
-                data.update({"Sheet" + k: v for k, v in sheet.get_info().items()})
-                if not data["Name"]:
-                    data["Name"] = document.Name or "Unnamed"
-                if view.attrib.get("data-type") == "reference":
-                    human_scale = self.get_scale_from_svg(os.path.join(self.layout_dir, path))
-                    if human_scale:
-                        data["Scale"] = human_scale
+                data = self.get_document_view_title_data(
+                    reference,
+                    sheet,
+                    document,
+                    os.path.join(self.layout_dir, path),
+                    is_reference=view.attrib.get("data-type") == "reference",
+                )
                 view.append(self.parse_embedded_svg(view_title, data))
 
             for image in images:
                 view.remove(image)
+
+    def get_document_view_title_data(
+        self,
+        reference: ifcopenshell.entity_instance,
+        sheet: ifcopenshell.entity_instance,
+        document: ifcopenshell.entity_instance,
+        content_path: str,
+        is_reference: bool,
+    ) -> dict:
+        """Template data for a schedule's or reference's view-title.
+
+        Shared by `build_documents` and `get_template_values`.
+        """
+        data = reference.get_info()
+        data.update({"Sheet" + k: v for k, v in sheet.get_info().items()})
+        if not data["Name"]:
+            data["Name"] = document.Name or "Unnamed"
+        if is_reference:
+            human_scale = self.get_scale_from_svg(content_path)
+            if human_scale:
+                data["Scale"] = human_scale
+        return data
+
+    def get_template_values(self) -> dict:
+        """The data every sheet's templates are filled with, without building.
+
+        For tools that display sheets from their layouts - SketchSpace renders
+        them live - so view-titles and titleblocks read as a build would. The
+        data comes from the same methods `build` uses, and from the model in
+        memory, unsaved edits included.
+
+        Sheets are keyed by their layout's path and placements by the path of the
+        file they place: a layout's ``data-id`` is a STEP id, which does not
+        survive a re-serialised model. Values are text, as pystache renders them,
+        except the booleans and lists of rows that templates test and iterate.
+
+        ::
+
+            {
+                "ifc": "<absolute path, or empty if unsaved>",
+                "sheets": [
+                    {
+                        "identification": "A01",
+                        "layout": "<absolute path>",
+                        "values": {...titleblock data...},
+                        "placements": {"<absolute path>": {...view-title data...}},
+                        "drawings": {"<drawing GlobalId>": {...the same, for drawings...}},
+                    }
+                ],
+                "north": {"grid": "rotate(...)", "true": "rotate(...)"},
+            }
+        """
+        ifc_file = tool.Ifc.get()
+        ifc_path = tool.Ifc.get_path()
+        result = {
+            "ifc": os.path.abspath(ifc_path) if ifc_path else "",
+            "sheets": [],
+            "north": {"grid": "rotate(0)", "true": "rotate(0)"},
+        }
+        if not ifc_file:
+            return result
+
+        def key(path: str) -> str:
+            return os.path.normcase(os.path.abspath(path))
+
+        drawings = {}
+        for drawing in ifc_file.by_type("IfcAnnotation"):
+            if drawing.ObjectType != "DRAWING":
+                continue
+            document = tool.Drawing.get_drawing_document(drawing)
+            if document and (uri := tool.Drawing.get_document_uri(document)):
+                drawings[key(uri)] = drawing
+
+        documents = {}
+        for information in ifc_file.by_type("IfcDocumentInformation"):
+            if information.Scope not in ("SCHEDULE", "REFERENCE"):
+                continue
+            for reference in tool.Drawing.get_document_references(information):
+                if uri := tool.Drawing.get_document_uri(reference):
+                    documents.setdefault(key(uri), information)
+
+        for sheet in ifc_file.by_type("IfcDocumentInformation"):
+            if sheet.Scope != "SHEET":
+                continue
+            layout = tool.Drawing.get_document_uri(sheet, "LAYOUT")
+            if not layout:
+                continue
+
+            placements = {}
+            by_drawing = {}
+            for reference in tool.Drawing.get_document_references(sheet):
+                kind = tool.Drawing.get_reference_description(reference)
+                if kind in ("LAYOUT", "TITLEBLOCK", "SHEET"):
+                    continue
+                uri = tool.Drawing.get_document_uri(reference)
+                if not uri:
+                    continue
+                if kind == "DRAWING":
+                    if (drawing := drawings.get(key(uri))) is None:
+                        continue
+                    data = self.get_drawing_view_title_data(reference, sheet, drawing, uri)
+                    by_drawing[drawing.GlobalId] = as_template_data(data)
+                else:
+                    if (document := documents.get(key(uri))) is None:
+                        continue
+                    data = self.get_document_view_title_data(
+                        reference, sheet, document, uri, is_reference=kind == "REFERENCE"
+                    )
+                placements[os.path.abspath(uri)] = as_template_data(data)
+
+            result["sheets"].append(
+                {
+                    "identification": str(tool.Drawing.get_sheet_identification(sheet)),
+                    "layout": os.path.abspath(layout),
+                    "values": as_template_data(self.get_titleblock_data(sheet)),
+                    "placements": placements,
+                    "drawings": by_drawing,
+                }
+            )
+
+        grid_north = ifcopenshell.util.geolocation.get_grid_north(ifc_file) * -1
+        true_north = ifcopenshell.util.geolocation.get_true_north(ifc_file) * -1
+        result["north"] = {"grid": f"rotate({grid_north})", "true": f"rotate({true_north})"}
+        return result
 
     def get_scale_from_svg(self, svg_path: str) -> str:
         try:

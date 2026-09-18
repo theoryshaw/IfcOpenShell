@@ -5252,8 +5252,15 @@ class AddReferenceImage(bpy.types.Operator, tool.Ifc.Operator, ImportHelper):
                 image = load_image(abs_path.name, str(abs_path.parent), check_existing=False)
                 image_width_px = image.size[0]
                 image_height_px = image.size[1]
-                aspect_ratio = image_width_px / image_height_px
+                bpy.data.images.remove(image)
 
+                # Blender hands back a 0x0 placeholder for anything it cannot decode,
+                # so browsing onto a non-image file would divide by zero here. Keep the
+                # current lengths until the user lands on something readable.
+                if not image_width_px or not image_height_px:
+                    return False
+
+                aspect_ratio = image_width_px / image_height_px
                 if aspect_ratio >= 1.0:
                     self.x_length = 1.0
                     self.y_length = 1.0 / aspect_ratio
@@ -5261,7 +5268,6 @@ class AddReferenceImage(bpy.types.Operator, tool.Ifc.Operator, ImportHelper):
                     self.x_length = aspect_ratio
                     self.y_length = 1.0
 
-                bpy.data.images.remove(image)
                 return True
 
         return False

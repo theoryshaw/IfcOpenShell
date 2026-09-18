@@ -126,7 +126,7 @@ class AddAnnotationType(bpy.types.Operator, tool.Ifc.Operator):
         element.ApplicableOccurrence = f"IfcAnnotation/{object_type}"
 
         if props.create_representation_for_type and object_type == "IMAGE":
-            bpy.ops.bim.add_reference_image("INVOKE_DEFAULT")
+            bpy.ops.bim.add_reference_image("INVOKE_DEFAULT", existing_object_by_name=obj.name)
 
 
 class EnableAddAnnotationType(bpy.types.Operator):
@@ -2736,7 +2736,7 @@ class AddAnnotation(bpy.types.Operator, tool.Ifc.Operator):
             enable_editing=object_type not in ("ELEVATION", "SECTION"),
         )
         if object_type == "IMAGE":
-            bpy.ops.bim.add_reference_image("INVOKE_DEFAULT")
+            bpy.ops.bim.add_reference_image("INVOKE_DEFAULT", existing_object_by_name=obj.name)
         if is_manual:
             element = tool.Ifc.get_entity(obj)
             tool.Drawing.set_manual_drawing_reference(element)
@@ -5220,6 +5220,14 @@ class AddReferenceImage(bpy.types.Operator, tool.Ifc.Operator, ImportHelper):
         description="Show Texture in Solid mode (slow)",
         default=False,
     )
+    existing_object_by_name: bpy.props.StringProperty(
+        name="Existing Object By Name",
+        description=(
+            "Name of an existing object to attach the reference image to. "
+            "If not provided, a new object will be created."
+        ),
+        options={"SKIP_SAVE", "HIDDEN"},
+    )
 
     @classmethod
     def poll(cls, context):
@@ -5285,11 +5293,29 @@ class AddReferenceImage(bpy.types.Operator, tool.Ifc.Operator, ImportHelper):
 
         image = load_image(abs_path.name, str(abs_path.parent), check_existing=False)
 
-        mesh = bpy.data.meshes.new(image_filepath.stem)
-        obj = bpy.data.objects.new(image_filepath.stem, mesh)
-        element = tool.Drawing.run_root_assign_class(
-            obj=obj, ifc_class="IfcAnnotation", predefined_type="IMAGE", should_add_representation=False
-        )
+        previous_representation = None
+        if self.existing_object_by_name:
+            obj = bpy.data.objects.get(self.existing_object_by_name)
+            if obj is None:
+                self.report({"ERROR"}, f'Object "{self.existing_object_by_name}" no longer exists.')
+                return
+            element = tool.Ifc.get_entity(obj)
+            if element is None:
+                self.report({"ERROR"}, f'Object "{obj.name}" is not an IFC element.')
+                return
+            # The caller already created, placed and grouped the annotation, so reuse its
+            # own context - a Model/Body representation would not show up in the drawing.
+            ifc_context = tool.Geometry.get_active_representation_context(obj)
+            active_representation = tool.Geometry.get_active_representation(obj)
+            if active_representation and active_representation.is_a("IfcShapeRepresentation"):
+                previous_representation = active_representation
+        else:
+            mesh = bpy.data.meshes.new(image_filepath.stem)
+            obj = bpy.data.objects.new(image_filepath.stem, mesh)
+            element = tool.Drawing.run_root_assign_class(
+                obj=obj, ifc_class="IfcAnnotation", predefined_type="IMAGE", should_add_representation=False
+            )
+            ifc_context = ifcopenshell.util.representation.get_context(ifc_file, "Model", "Body", "MODEL_VIEW")
 
         builder = ifcopenshell.util.shape_builder.ShapeBuilder(ifc_file)
         unit_scale = ifcopenshell.util.unit.calculate_unit_scale(ifc_file)
@@ -5298,9 +5324,15 @@ class AddReferenceImage(bpy.types.Operator, tool.Ifc.Operator, ImportHelper):
         verts = [(-hx, -hy, 0.0), (hx, -hy, 0.0), (hx, hy, 0.0), (-hx, hy, 0.0)]
         item = builder.mesh(verts, [[0, 1, 2, 3]])
 
-        ifc_context = ifcopenshell.util.representation.get_context(ifc_file, "Model", "Body", "MODEL_VIEW")
         representation = builder.get_representation(ifc_context, [item])
         ifcopenshell.api.geometry.assign_representation(ifc_file, element, representation)
+        if previous_representation is not None:
+            # Swap out the placeholder geometry the annotation was created with, otherwise
+            # the element ends up with two representations in the same context.
+            ifcopenshell.api.geometry.unassign_representation(
+                ifc_file, product=element, representation=previous_representation
+            )
+            ifcopenshell.api.geometry.remove_representation(ifc_file, representation=previous_representation)
 
         style = ifcopenshell.api.style.add_style(tool.Ifc.get(), name=image_filepath.stem)
         ifcopenshell.api.style.assign_representation_styles(

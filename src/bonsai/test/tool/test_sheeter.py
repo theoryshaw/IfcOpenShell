@@ -850,7 +850,7 @@ class TestSheetSpatial:
         site = self._site(sheet_model, "Lot 7", Town="Madison")
         self._set(sheet_model, {"SiteTown": ""})
         assert site.SiteAddress is None
-        assert sheet_model.ifc.by_type("IfcPostalAddress") == []
+        assert not sheet_model.ifc.by_type("IfcPostalAddress")
 
     def test_renaming_renames_the_object_and_the_spatial_tree(self, sheet_model, monkeypatch):
         import bonsai.core.spatial
@@ -949,5 +949,5 @@ class TestSheetSpatial:
         site = self._site(sheet_model, "Lot 7")
         self._link(sheet_model, site)
         ifcopenshell.api.document.remove_information(sheet_model.ifc, information=sheet_model.sheet)
-        assert sheet_model.ifc.by_type("IfcRelAssociatesDocument") == []
+        assert not sheet_model.ifc.by_type("IfcRelAssociatesDocument")
         assert site.HasAssociations == ()

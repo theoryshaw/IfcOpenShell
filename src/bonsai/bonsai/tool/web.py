@@ -510,14 +510,9 @@ class Web(bonsai.core.tool.Web):
         # appears on each sheet placing it - so the new values follow at once
         # rather than at the caller's next poll. Blender is told to repaint for
         # the same reason: this ran on a timer, not on an event, so its own
-        # panels would otherwise keep showing the names they last drew. Their
-        # cached data is dropped first - an IFC operator does that by itself,
-        # but this edit ran outside one, and a repaint alone redraws the cache:
-        # a sheet's Site list kept its old choice after a change made here.
+        # panels would otherwise keep showing the names they last drew. (Their
+        # cached data is already fresh: the edit ran as an IFC operator.)
         if request_type == "setTemplateValue" and result["ok"]:
-            import bonsai.bim.handler
-
-            bonsai.bim.handler.refresh_ui_data()
             tool.Blender.redraw_all_areas()
             values = sheeter.SheetBuilder().get_template_values()
             values["requestId"] = operator_data.get("requestId")

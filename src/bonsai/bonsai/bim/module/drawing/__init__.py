@@ -108,6 +108,8 @@ classes = (
     operator.LinkSheetSite,
     operator.LinkSheetBuilding,
     operator.EditSheetTemplateValues,
+    operator.AddSheetView,
+    operator.RemoveSheetView,
     operator.RemoveTextLiteral,
     operator.SaveDrawingStyle,
     operator.SaveDrawingStylesData,

@@ -1105,3 +1105,134 @@ class TestIsDrawingActive(NewFile):
         # addresses, so this assertion documents that assumption.
         assert bpy.app.background is True
         assert subject.is_drawing_active() is True
+
+
+class SheetOnDisk:
+    """A sheet with its layout and drawings, as files and as a model.
+
+    The code under test decides which group on a sheet the model accounts for,
+    so the files and the layout have to be real. Only the calls that reach into
+    Blender or resolve a URI are stubbed.
+    """
+
+    def __init__(self, tmp_path, monkeypatch, identification="A01", name="PLANS"):
+        self.ifc = ifcopenshell.file()
+        tool.Ifc.set(self.ifc)
+        self.layouts = tmp_path / "layouts"
+        self.drawings = tmp_path / "drawings"
+        self.layouts.mkdir(exist_ok=True)
+        self.drawings.mkdir(exist_ok=True)
+        self.sheet = self.ifc.createIfcDocumentInformation(
+            Identification=identification, Name=name, Scope="SHEET"
+        )
+        self.layout_path = str(self.layouts / f"{identification} - {name}.svg")
+        self.references = [
+            self.ifc.createIfcDocumentReference(
+                Location=self.layout_path, Description="LAYOUT", ReferencedDocument=self.sheet
+            )
+        ]
+        monkeypatch.setattr(
+            tool.Drawing,
+            "get_document_references",
+            staticmethod(lambda info: self.references if info == self.sheet else []),
+        )
+        monkeypatch.setattr(
+            tool.Drawing, "get_reference_description", staticmethod(lambda ref: ref.Description)
+        )
+        monkeypatch.setattr(
+            tool.Drawing,
+            "get_document_uri",
+            staticmethod(
+                lambda doc, description=None: (
+                    doc.Location
+                    if doc.is_a("IfcDocumentReference")
+                    else next(
+                        (r.Location for r in self.references if r.Description == description), None
+                    )
+                )
+            ),
+        )
+
+    def add_drawing(self, name: str, guid: str) -> str:
+        """A drawing the sheet references, with its file. Returns the path."""
+        path = str(self.drawings / f"{name}.svg")
+        self.references.append(
+            self.ifc.createIfcDocumentReference(
+                Location=path, Description="DRAWING", ReferencedDocument=self.sheet
+            )
+        )
+        Path(path).write_text('<svg xmlns="http://www.w3.org/2000/svg"/>')
+        return path
+
+
+class TestRemoveUnreferencedGroups(NewFile):
+    """Adding a drawing writes the group at once but the reference only on save,
+    so an unsaved session leaves the layout placing what the model never got.
+    The reopened model is what the sheet is."""
+
+    def _layout(self, model, places):
+        """places: (file, data-id) pairs written as drawing groups."""
+        groups = "".join(
+            f'<g data-type="drawing" data-id="{did}" data-drawing="0g{i}">'
+            f'<image data-type="foreground" xlink:href="{os.path.relpath(f, str(model.layouts))}"/>'
+            f"</g>"
+            for i, (f, did) in enumerate(places)
+        )
+        Path(model.layout_path).write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" '
+            f'xmlns:xlink="http://www.w3.org/1999/xlink">{groups}</svg>'
+        )
+
+    def _places(self, model) -> list[str]:
+        root = ET.parse(model.layout_path).getroot()
+        out = []
+        for g in root.findall("{http://www.w3.org/2000/svg}g"):
+            image = g.find('.//{http://www.w3.org/2000/svg}image[@data-type="foreground"]')
+            if image is not None:
+                out.append(os.path.basename(image.get("{http://www.w3.org/1999/xlink}href")))
+        return out
+
+    def test_a_group_the_model_does_not_place_is_removed(self, tmp_path, monkeypatch):
+        model = SheetOnDisk(tmp_path, monkeypatch)
+        kept = model.add_drawing("PLAN", "0aaa")
+        stray = str(model.drawings / "NEVER SAVED.svg")
+        Path(stray).write_text("<svg/>")
+        self._layout(model, [(kept, 5000), (stray, 5001)])
+
+        removed = subject.remove_unreferenced_groups(model.sheet)
+
+        assert len(removed) == 1
+        assert "NEVER SAVED.svg" in removed[0]
+        assert self._places(model) == ["PLAN.svg"]
+
+    def test_a_second_copy_of_one_drawing_is_removed(self, tmp_path, monkeypatch):
+        # One reference, three groups - what a removal that could not find its
+        # group leaves behind, once adding is allowed again.
+        model = SheetOnDisk(tmp_path, monkeypatch)
+        plan = model.add_drawing("PLAN", "0aaa")
+        self._layout(model, [(plan, 5000), (plan, 5001), (plan, 5002)])
+
+        removed = subject.remove_unreferenced_groups(model.sheet)
+
+        assert len(removed) == 2
+        assert self._places(model) == ["PLAN.svg"]
+
+    def test_nothing_goes_when_the_model_accounts_for_everything(self, tmp_path, monkeypatch):
+        model = SheetOnDisk(tmp_path, monkeypatch)
+        plan = model.add_drawing("PLAN", "0aaa")
+        section = model.add_drawing("SECTION", "0bbb")
+        self._layout(model, [(plan, 5000), (section, 5001)])
+
+        assert subject.remove_unreferenced_groups(model.sheet) == []
+        assert self._places(model) == ["PLAN.svg", "SECTION.svg"]
+
+    def test_a_renumbered_model_keeps_its_groups(self, tmp_path, monkeypatch):
+        # After a re-serialisation no data-id matches anything. Removing on that
+        # basis would empty every sheet in the project.
+        model = SheetOnDisk(tmp_path, monkeypatch)
+        plan = model.add_drawing("PLAN", "0aaa")
+        section = model.add_drawing("SECTION", "0bbb")
+        self._layout(model, [(plan, 999001), (section, 999002)])
+
+        assert subject.remove_unreferenced_groups(model.sheet) == []
+        assert self._places(model) == ["PLAN.svg", "SECTION.svg"]

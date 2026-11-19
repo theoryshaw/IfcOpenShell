@@ -230,7 +230,7 @@ class LoadsDecorator(tool.Blender.ViewportDecorator):
     def __call__(self) -> None:
         """set gpu configurations to draw 3D representations"""
         if not self.shader_info:
-            return  # No loads, as in most models, which show loads by default.
+            return  # No loads to draw.
         # set open gl configurations
         original_blend = gpu.state.blend_get()
         original_depth_test = gpu.state.depth_test_get()

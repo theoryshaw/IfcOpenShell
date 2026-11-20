@@ -357,6 +357,8 @@ class BIM_PT_structural_item_loads(Panel):
         if not StructuralItemLoadsData.is_loaded:
             StructuralItemLoadsData.load()
         layout = self.layout
+        if tool.Ifc.get_entity(context.active_object).is_a("IfcStructuralPointConnection"):
+            layout.operator("bim.place_structural_point", icon="PIVOT_CURSOR")
         load_cases = StructuralItemLoadsData.data["load_cases"]
         if not load_cases:
             layout.label(text="No loads applied", icon="INFO")

@@ -3811,6 +3811,230 @@ class KeepStructuralMoments(bpy.types.Operator, tool.Ifc.Operator):
         return {"FINISHED"}
 
 
+# Items for Place Point's From, kept referenced while its dialog is open, as Blender requires.
+PLACE_FROM_ITEMS: list[tuple[str, str, str]] = []
+# The point last placed from, offered first next time, as the book places several points from one.
+PLACE_FROM_LAST: list[str] = [""]
+# Set while Place Point fills its inputs from where the point is, so that filling them does not move it.
+PLACE_FILLING: list[bool] = [False]
+# Set while Place Point's dialog is open, the only time its inputs preview the point as they change.
+PLACE_DIALOG_OPEN: list[bool] = [False]
+# The inputs each input mode places the point by, left alone while they are typed in.
+PLACE_MODE_INPUTS = {
+    "COMPONENTS": ("dx", "dz"),
+    "ANGLE": ("distance", "direction", "angle"),
+    "SLOPE": ("distance", "direction", "rise", "run"),
+}
+
+
+def get_place_from_items(self: "PlaceStructuralPoint", context: bpy.types.Context) -> list:
+    PLACE_FROM_ITEMS.clear()
+    for point in tool.Ifc.get().by_type("IfcStructuralPointConnection"):
+        if point.id() != self.point_id and has_point_vertex(tool.Ifc.get_object(point)):
+            PLACE_FROM_ITEMS.append((str(point.id()), point.Name or "Unnamed", "Place the point from this one"))
+    PLACE_FROM_ITEMS.sort(key=lambda item: item[1])
+    PLACE_FROM_ITEMS[:0] = [
+        ("ORIGIN", "Origin", "Place the point from the origin, X = Z = 0"),
+        ("CURSOR", "3D Cursor", "Place the point from the 3D cursor, which can be snapped to any vertex"),
+        (
+            "OBJECT",
+            "Picked Object",
+            "Place the point from an object picked with the eyedropper: a point's vertex, or else its origin",
+        ),
+    ]
+    return PLACE_FROM_ITEMS
+
+
+def has_point_vertex(obj: Union[bpy.types.Object, None]) -> bool:
+    return bool(obj and obj.type == "MESH" and obj.data.vertices)
+
+
+def get_place_objects(props: "PlaceStructuralPoint") -> tuple[Union[bpy.types.Object, None], Union[Vector, None]]:
+    """The object of the point being placed, and where it is placed from: the origin, or another point, if both
+    have a vertex"""
+    try:
+        point_obj = tool.Ifc.get_object(tool.Ifc.get().by_id(props.point_id))
+        if props.from_point == "ORIGIN":
+            origin = Vector((0.0, 0.0, 0.0))
+        elif props.from_point == "CURSOR":
+            origin = bpy.context.scene.cursor.location.copy()
+        elif props.from_point == "OBJECT":
+            obj = tool.Structural.get_structural_props().place_from_object
+            entity = tool.Ifc.get_entity(obj) if obj else None
+            is_point = entity and entity.is_a("IfcStructuralPointConnection") and has_point_vertex(obj)
+            origin = None if not obj else get_vertex_location(obj) if is_point else obj.matrix_world.translation.copy()
+        else:
+            from_obj = tool.Ifc.get_object(tool.Ifc.get().by_id(int(props.from_point)))
+            origin = get_vertex_location(from_obj) if has_point_vertex(from_obj) else None
+    except (RuntimeError, ValueError, TypeError):
+        return None, None
+    return (point_obj if has_point_vertex(point_obj) else None), origin
+
+
+def get_place_offset(props: "PlaceStructuralPoint") -> tuple[float, float]:
+    """Where the point is to be from the one it is placed from, as entered: Δx and Δz, or a distance and its
+    direction"""
+    if props.input_mode == "COMPONENTS":
+        return props.dx, props.dz
+    return tool.Structural.get_in_plane_components(
+        props.input_mode,
+        magnitude=props.distance,
+        angle=props.angle,
+        rise=props.rise,
+        run=props.run,
+        direction=props.direction,
+    )
+
+
+def move_placed_point(props: "PlaceStructuralPoint", context: bpy.types.Context) -> None:
+    """Preview the point where it is entered, as an input changes in the open dialog. Run with its inputs given,
+    as from the last-operator panel, the point is placed from them as they are, in its execute"""
+    if not PLACE_DIALOG_OPEN[0] or PLACE_FILLING[0]:
+        return
+    put_placed_point(props, context)
+    fill_place_inputs(props, PLACE_MODE_INPUTS[props.input_mode])
+
+
+def put_placed_point(props: "PlaceStructuralPoint", context: bpy.types.Context) -> None:
+    """Move the point to where it is entered from the one it is placed from, keeping its Y, with the moments
+    previewed, to be put back on cancelling"""
+    point_obj, origin = get_place_objects(props)
+    if not point_obj or origin is None:
+        return
+    dx, dz = get_place_offset(props)
+    at = get_vertex_location(point_obj)
+    MOMENT_CENTRE_PREVIEW.setdefault(point_obj.name, point_obj.matrix_world.translation.copy())
+    point_obj.matrix_world.translation += Vector((origin.x + dx, at.y, origin.z + dz)) - at
+    context.view_layer.update()
+    ShaderInfo.preview = get_kept_moment_preview([tool.Ifc.get_entity(point_obj)])
+    redraw_loads(context)
+
+
+def fill_place_inputs(props: "PlaceStructuralPoint", keep: tuple[str, ...] = ()) -> None:
+    """Fill the inputs from where the point is now, so that another point to place from or input mode reads the
+    same place rather than moving it.
+
+    :param keep: Inputs being typed in, left as they are, so that an angle typed does not jump to the next eighth's.
+    """
+    point_obj, origin = get_place_objects(props)
+    if not point_obj or origin is None:
+        return
+    at = get_vertex_location(point_obj)
+    dx, dz = at.x - origin.x, at.z - origin.z
+    values = {"dx": dx, "dz": dz, "distance": math.hypot(dx, dz)}
+    if dx or dz:
+        values["direction"], values["angle"], _, _ = tool.Structural.get_eighth(dx, dz)
+        values["rise"], values["run"] = tool.Structural.get_simple_slope(abs(dx), abs(dz))
+    PLACE_FILLING[0] = True
+    try:
+        for name, value in values.items():
+            if name not in keep:
+                setattr(props, name, value)
+    finally:
+        PLACE_FILLING[0] = False
+
+
+def refill_place_inputs(props: "PlaceStructuralPoint", context: bpy.types.Context) -> None:
+    """Fill every input from where the point is: an update callback, which takes exactly two arguments"""
+    if PLACE_DIALOG_OPEN[0]:
+        fill_place_inputs(props)
+
+
+class PlaceStructuralPoint(
+    bpy.types.Operator,
+    tool.Ifc.Operator,
+    get_direction_input("the point, from the one it is placed from,", move_placed_point, {"SKIP_SAVE"}),
+):
+    bl_idname = "bim.place_structural_point"
+    bl_label = "Place Point"
+    bl_description = (
+        "Move the active structural point to a distance and direction from another point, as a force is entered, or "
+        "by Δx and Δz, previewing it and the moments"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+    point_id: bpy.props.IntProperty(options={"HIDDEN", "SKIP_SAVE"})
+    from_point: bpy.props.EnumProperty(
+        name="From", description="The point it is placed from", items=get_place_from_items, update=refill_place_inputs
+    )
+    input_mode: bpy.props.EnumProperty(
+        name="Input",
+        items=[
+            ("COMPONENTS", "Components", "Δx and Δz, from the other point to this one"),
+            ("ANGLE", "Angle", "Distance and angle, from the other point to this one"),
+            ("SLOPE", "Slope", "Distance and rise over run, from the other point to this one"),
+        ],
+        default="ANGLE",
+        update=refill_place_inputs,
+    )
+    distance: bpy.props.FloatProperty(
+        name="Distance", description="From the other point to this one", subtype="DISTANCE", update=move_placed_point
+    )
+    dx: bpy.props.FloatProperty(
+        name="Δx", description="From the other point to this one, along X", subtype="DISTANCE", update=move_placed_point
+    )
+    dz: bpy.props.FloatProperty(
+        name="Δz", description="From the other point to this one, along Z", subtype="DISTANCE", update=move_placed_point
+    )
+
+    @classmethod
+    def poll(cls, context):
+        element = tool.Ifc.get_entity(context.active_object) if context.active_object else None
+        if not element or not element.is_a("IfcStructuralPointConnection"):
+            cls.poll_message_set("Select a structural point connection to place")
+            return False
+        return True
+
+    def invoke(self, context, event):
+        MOMENT_CENTRE_PREVIEW.clear()
+        self.point_id = tool.Ifc.get_entity(context.active_object).id()
+        ids = [item[0] for item in get_place_from_items(self, context)]
+        # The one placed from last, or else the first other point, or the origin if there is none.
+        self.from_point = PLACE_FROM_LAST[0] if PLACE_FROM_LAST[0] in ids else ids[min(1, len(ids) - 1)]
+        fill_place_inputs(self.properties)
+        PLACE_DIALOG_OPEN[0] = True
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "from_point")
+        if self.from_point == "OBJECT":
+            # The object field, with its eyedropper; the inputs then place the point from it as they are typed.
+            layout.prop(tool.Structural.get_structural_props(), "place_from_object")
+        layout.row().prop(self, "input_mode", expand=True)
+        if self.input_mode == "COMPONENTS":
+            layout.prop(self, "dx")
+            layout.prop(self, "dz")
+            return
+        self.draw_direction_inputs(layout)
+        layout.prop(self, "distance")
+        dx, dz = get_place_offset(self)
+        length_scale = ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get())
+        unit = get_project_unit_symbol("LENGTHUNIT", "m")
+        layout.label(
+            text=f"Δx = {dx / length_scale:.4f}   Δz = {dz / length_scale:.4f} {unit}", icon="ORIENTATION_GLOBAL"
+        )
+
+    def cancel(self, context):
+        PLACE_DIALOG_OPEN[0] = False
+        restore_moment_centre(context)
+
+    def _execute(self, context):
+        PLACE_DIALOG_OPEN[0] = False
+        point_obj, origin = get_place_objects(self)
+        if not point_obj or origin is None:
+            return {"CANCELLED"}
+        put_placed_point(self, context)  # Where the inputs say, as when run again from the last-operator panel.
+        MOMENT_CENTRE_PREVIEW.clear()  # It stays where the preview left it.
+        ShaderInfo.preview = {}  # A kept moment's unknown is written below.
+        PLACE_FROM_LAST[0] = self.from_point
+        bonsai.core.geometry.edit_object_placement(tool.Ifc, tool.Geometry, tool.Surveyor, obj=point_obj)
+        point = tool.Ifc.get_entity(point_obj)
+        keep_resultant_moments(get_moved_activities([point]))
+        UNKEPT_ITEMS.discard(point.id())
+        redraw_loads(context)
+        return {"FINISHED"}
+
+
 class ExportStructuralCalculations(bpy.types.Operator):
     bl_idname = "bim.export_structural_calculations"
     bl_label = "Export Calculations"

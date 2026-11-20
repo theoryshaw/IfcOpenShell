@@ -70,6 +70,7 @@ classes = (
     operator.EditStructuralMomentCentre,
     operator.EditStructuralResultantMoment,
     operator.KeepStructuralMoments,
+    operator.PlaceStructuralPoint,
     operator.ExportStructuralCalculations,
     operator.EnableEditingStructuralLoadCase,
     operator.DisableEditingStructuralLoadCase,

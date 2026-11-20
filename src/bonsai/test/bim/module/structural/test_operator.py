@@ -443,7 +443,9 @@ class TestKeepingMomentsAfterMoves(NewFile):
         centre, _ = self.add_point(ifc, "A", 0.0)
         point, obj = self.add_point(ifc, "B", 2.0)
         bpy.context.view_layer.update()
-        load = ifcopenshell.api.structural.add_structural_load(ifc, name="Z -10 N", ifc_class="IfcStructuralLoadSingleForce")
+        load = ifcopenshell.api.structural.add_structural_load(
+            ifc, name="Z -10 N", ifc_class="IfcStructuralLoadSingleForce"
+        )
         load.ForceX, load.ForceY, load.ForceZ = 0.0, 0.0, -10.0
         activity = ifcopenshell.api.structural.add_structural_activity(
             ifc, applied_load=load, structural_member=point, ifc_class="IfcStructuralPointAction"
@@ -507,3 +509,101 @@ class TestKeepingMomentsAfterMoves(NewFile):
         assert not UNKEPT_ITEMS
         assert not ShaderInfo.preview
         assert tool.Structural.get_force(load) == pytest.approx((0.0, 0.0, -10.0))
+
+
+class TestPlacingAPoint(NewFile):
+    """Place Point moves a structural point to a distance and direction from another, as the book dimensions one:
+    C, 200 mm at 60 degrees from B"""
+
+    def add_point(self, ifc, name, x, z=0.0):
+        point = ifcopenshell.api.root.create_entity(ifc, ifc_class="IfcStructuralPointConnection", name=name)
+        mesh = bpy.data.meshes.new(name)
+        mesh.from_pydata([(0.0, 0.0, 0.0)], [], [])
+        obj = bpy.data.objects.new(name, mesh)
+        obj.location = (x, 0.0, z)
+        bpy.context.scene.collection.objects.link(obj)
+        tool.Ifc.link(point, obj)
+        return point, obj
+
+    def setup_points(self):
+        ifc = ifcopenshell.file(schema="IFC4")
+        tool.Ifc.set(ifc)
+        ifcopenshell.api.root.create_entity(ifc, ifc_class="IfcProject")
+        b, b_obj = self.add_point(ifc, "B", 1.0, 0.5)
+        c, c_obj = self.add_point(ifc, "C", 3.0)
+        bpy.context.view_layer.update()
+        bpy.context.view_layer.objects.active = c_obj
+        return ifc, b, c, c_obj
+
+    def test_placing_by_distance_and_angle(self):
+        _, b, c, c_obj = self.setup_points()
+        bpy.ops.bim.place_structural_point(
+            point_id=c.id(), from_point=str(b.id()), input_mode="ANGLE", distance=0.2, direction="Q1", angle=60.0
+        )
+        at = c_obj.matrix_world @ c_obj.data.vertices[0].co
+        assert (at.x, at.y, at.z) == pytest.approx(
+            (1.0 + 0.2 * math.cos(math.radians(60)), 0.0, 0.5 + 0.2 * math.sin(math.radians(60)))
+        )
+        # Written to the IFC, not only moved in Blender.
+        assert c.ObjectPlacement.RelativePlacement.Location.Coordinates == pytest.approx((at.x, 0.0, at.z))
+
+    def test_placing_by_components(self):
+        _, b, c, c_obj = self.setup_points()
+        bpy.ops.bim.place_structural_point(
+            point_id=c.id(), from_point=str(b.id()), input_mode="COMPONENTS", dx=-0.3, dz=0.4
+        )
+        at = c_obj.matrix_world @ c_obj.data.vertices[0].co
+        assert (at.x, at.z) == pytest.approx((0.7, 0.9))
+
+    def test_a_kept_moment_follows_the_point_placed(self):
+        ifc, b, c, c_obj = self.setup_points()
+        centre, _ = self.add_point(ifc, "A", 0.0)
+        bpy.context.view_layer.update()
+        case = ifcopenshell.api.structural.add_structural_load_case(ifc, name="Case")
+        load = ifcopenshell.api.structural.add_structural_load(
+            ifc, name="Z -10 N", ifc_class="IfcStructuralLoadSingleForce"
+        )
+        load.ForceX, load.ForceY, load.ForceZ = 0.0, 0.0, -10.0
+        activity = ifcopenshell.api.structural.add_structural_activity(
+            ifc, applied_load=load, structural_member=c, ifc_class="IfcStructuralPointAction"
+        )
+        ifcopenshell.api.group.assign_group(ifc, products=[activity], group=case)
+        tool.Structural.set_locks(activity, False, True)
+        tool.Structural.set_moment_centre(case, centre)
+        tool.Structural.set_resultant_moment(case, -30.0)  # C at x = 3: 3 x -10, clockwise.
+        # C to x = 1 + 0.5 = 1.5, from B: half the arm, so twice the force.
+        bpy.ops.bim.place_structural_point(
+            point_id=c.id(), from_point=str(b.id()), input_mode="COMPONENTS", dx=0.5, dz=0.0
+        )
+        assert tool.Structural.get_force(load) == pytest.approx((0.0, 0.0, -20.0))
+
+    def test_placing_from_the_origin(self):
+        _, _, c, c_obj = self.setup_points()
+        bpy.ops.bim.place_structural_point(
+            point_id=c.id(), from_point="ORIGIN", input_mode="ANGLE", distance=0.2, direction="Q4", angle=30.0
+        )
+        at = c_obj.matrix_world @ c_obj.data.vertices[0].co
+        # 30 degrees up from -X: 150 degrees from +X.
+        assert (at.x, at.z) == pytest.approx((0.2 * math.cos(math.radians(150)), 0.2 * math.sin(math.radians(150))))
+
+    def test_placing_from_the_3d_cursor(self):
+        _, _, c, c_obj = self.setup_points()
+        bpy.context.scene.cursor.location = (-1.0, 0.0, 2.0)
+        bpy.ops.bim.place_structural_point(
+            point_id=c.id(), from_point="CURSOR", input_mode="COMPONENTS", dx=0.5, dz=-0.5
+        )
+        at = c_obj.matrix_world @ c_obj.data.vertices[0].co
+        assert (at.x, at.z) == pytest.approx((-0.5, 1.5))
+
+    def test_placing_from_a_picked_object(self):
+        _, _, c, c_obj = self.setup_points()
+        empty = bpy.data.objects.new("Corner", None)  # Any object: its origin.
+        empty.location = (2.0, 0.0, 1.0)
+        bpy.context.scene.collection.objects.link(empty)
+        bpy.context.view_layer.update()
+        tool.Structural.get_structural_props().place_from_object = empty
+        bpy.ops.bim.place_structural_point(
+            point_id=c.id(), from_point="OBJECT", input_mode="COMPONENTS", dx=0.0, dz=0.25
+        )
+        at = c_obj.matrix_world @ c_obj.data.vertices[0].co
+        assert (at.x, at.z) == pytest.approx((2.0, 1.25))

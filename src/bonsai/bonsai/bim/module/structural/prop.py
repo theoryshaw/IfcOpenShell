@@ -190,6 +190,13 @@ class BIMStructuralProperties(PropertyGroup):
         name="Structural Analysis Model Attributes", type=Attribute
     )
     is_editing: BoolProperty(name="Is Editing", default=False)
+    # Place Point's object to place from, kept here as an operator cannot hold an object, so that it can be picked
+    # with the eyedropper.
+    place_from_object: PointerProperty(
+        name="Object",
+        description="The object to place the point from: its vertex, if a point, or else its origin",
+        type=bpy.types.Object,
+    )
     structural_analysis_models: CollectionProperty(name="Structural Analysis Models", type=StructuralAnalysisModel)
     active_structural_analysis_model_index: IntProperty(name="Active Structural Analysis Model Index")
     active_structural_analysis_model_id: IntProperty(name="Active Structural Analysis Model Id")
@@ -375,6 +382,7 @@ class BIMStructuralProperties(PropertyGroup):
     if TYPE_CHECKING:
         structural_analysis_model_attributes: bpy.types.bpy_prop_collection_idprop[Attribute]
         is_editing: bool
+        place_from_object: Union[bpy.types.Object, None]
         structural_analysis_models: bpy.types.bpy_prop_collection_idprop[StructuralAnalysisModel]
         active_structural_analysis_model_index: int
         active_structural_analysis_model_id: int

@@ -3902,12 +3902,6 @@ PLACE_FROM_LAST: list[str] = [""]
 PLACE_FILLING: list[bool] = [False]
 # Set while Place Point's dialog is open, the only time its inputs preview the point as they change.
 PLACE_DIALOG_OPEN: list[bool] = [False]
-# The inputs each input mode places the point by, left alone while they are typed in.
-PLACE_MODE_INPUTS = {
-    "COMPONENTS": ("dx", "dz"),
-    "ANGLE": ("distance", "direction", "angle"),
-    "SLOPE": ("distance", "direction", "rise", "run"),
-}
 
 
 def get_place_from_items(self: "PlaceStructuralPoint", context: bpy.types.Context) -> list:
@@ -3928,45 +3922,103 @@ def get_place_from_items(self: "PlaceStructuralPoint", context: bpy.types.Contex
     return PLACE_FROM_ITEMS
 
 
+# Items for where Place Point's known Δx or Δz is measured from, kept referenced as PLACE_FROM_ITEMS are.
+PLACE_LENGTH_FROM_ITEMS: list[tuple[str, str, str]] = []
+
+
+def get_place_length_from_items(self: "PlaceStructuralPoint", context: bpy.types.Context) -> list:
+    """The same as From, but for the picked object, which From has the one field for, and with the same as From"""
+    PLACE_LENGTH_FROM_ITEMS[:] = [("SAME", "Same as From", "Measured from the point it is placed from")] + [
+        (key, name, description.replace("Place the point from", "Measured from"))
+        for key, name, description in get_place_from_items(self, context)
+        if key != "OBJECT"
+    ]
+    return PLACE_LENGTH_FROM_ITEMS
+
+
 def has_point_vertex(obj: Union[bpy.types.Object, None]) -> bool:
     return bool(obj and obj.type == "MESH" and obj.data.vertices)
 
 
+def get_place_reference(key: str) -> Union[Vector, None]:
+    """Where a point is placed from: the origin, the 3D cursor, the picked object or another point, as From names
+    them, or None if it has no vertex"""
+    if key == "ORIGIN":
+        return Vector((0.0, 0.0, 0.0))
+    if key == "CURSOR":
+        return bpy.context.scene.cursor.location.copy()
+    if key == "OBJECT":
+        obj = tool.Structural.get_structural_props().place_from_object
+        entity = tool.Ifc.get_entity(obj) if obj else None
+        is_point = entity and entity.is_a("IfcStructuralPointConnection") and has_point_vertex(obj)
+        return None if not obj else get_vertex_location(obj) if is_point else obj.matrix_world.translation.copy()
+    from_obj = tool.Ifc.get_object(tool.Ifc.get().by_id(int(key)))
+    return get_vertex_location(from_obj) if has_point_vertex(from_obj) else None
+
+
 def get_place_objects(props: "PlaceStructuralPoint") -> tuple[Union[bpy.types.Object, None], Union[Vector, None]]:
-    """The object of the point being placed, and where it is placed from: the origin, or another point, if both
-    have a vertex"""
+    """The object of the point being placed, and From's point, if both have a vertex"""
     try:
         point_obj = tool.Ifc.get_object(tool.Ifc.get().by_id(props.point_id))
-        if props.from_point == "ORIGIN":
-            origin = Vector((0.0, 0.0, 0.0))
-        elif props.from_point == "CURSOR":
-            origin = bpy.context.scene.cursor.location.copy()
-        elif props.from_point == "OBJECT":
-            obj = tool.Structural.get_structural_props().place_from_object
-            entity = tool.Ifc.get_entity(obj) if obj else None
-            is_point = entity and entity.is_a("IfcStructuralPointConnection") and has_point_vertex(obj)
-            origin = None if not obj else get_vertex_location(obj) if is_point else obj.matrix_world.translation.copy()
-        else:
-            from_obj = tool.Ifc.get_object(tool.Ifc.get().by_id(int(props.from_point)))
-            origin = get_vertex_location(from_obj) if has_point_vertex(from_obj) else None
+        origin = get_place_reference(props.from_point)
     except (RuntimeError, ValueError, TypeError):
         return None, None
     return (point_obj if has_point_vertex(point_obj) else None), origin
 
 
-def get_place_offset(props: "PlaceStructuralPoint") -> tuple[float, float]:
-    """Where the point is to be from the one it is placed from, as entered: Δx and Δz, or a distance and its
-    direction"""
+def get_known_axis(props: "PlaceStructuralPoint") -> Union[str, None]:
+    """The axis of the length that may be measured from a point other than From: Δz by components, or the Δx or Δz
+    given with a direction, or None for a distance"""
     if props.input_mode == "COMPONENTS":
-        return props.dx, props.dz
-    return tool.Structural.get_in_plane_components(
+        return "z"
+    return {"DX": "x", "DZ": "z"}.get(props.known)
+
+
+def get_length_origin(props: "PlaceStructuralPoint", origin: Vector) -> Union[Vector, None]:
+    """Where the known Δx or Δz is measured from: From's point, or the point chosen for it"""
+    if props.length_from == "SAME":
+        return origin
+    try:
+        return get_place_reference(props.length_from)
+    except (RuntimeError, ValueError, TypeError):
+        return None
+
+
+def get_place_offset(props: "PlaceStructuralPoint", origin: Vector) -> Union[tuple[float, float], None]:
+    """Where the point is to be from From's point, as entered: by Δx and Δz; by a distance and direction; or along
+    a direction until a Δx or Δz is reached, as along a member's slope to a height. None if the direction never
+    reaches it, or the point a length is measured from has no vertex"""
+    axis = get_known_axis(props)
+    length_origin = get_length_origin(props, origin) if axis else origin
+    if length_origin is None:
+        return None
+    if props.input_mode == "COMPONENTS":
+        return props.dx, length_origin.z + props.dz - origin.z
+    ux, uz = tool.Structural.get_in_plane_components(
         props.input_mode,
-        magnitude=props.distance,
+        magnitude=props.distance if props.known == "DISTANCE" else 1.0,
         angle=props.angle,
         rise=props.rise,
         run=props.run,
         direction=props.direction,
     )
+    if props.known == "DISTANCE":
+        return ux, uz
+    if axis == "x":
+        along, wanted = ux, length_origin.x + props.dx - origin.x
+    else:
+        along, wanted = uz, length_origin.z + props.dz - origin.z
+    if abs(along) < 1e-9:
+        return None  # The direction runs parallel to the axis: it never reaches the length.
+    return ux * wanted / along, uz * wanted / along
+
+
+def get_typed_inputs(props: "PlaceStructuralPoint") -> tuple[str, ...]:
+    """The inputs the point is placed by, left alone while they are typed in"""
+    if props.input_mode == "COMPONENTS":
+        return ("dx", "dz")
+    direction = ("direction", "angle") if props.input_mode == "ANGLE" else ("direction", "rise", "run")
+    return direction + {"DISTANCE": ("distance",), "DX": ("dx",), "DZ": ("dz",)}[props.known]
 
 
 def move_placed_point(props: "PlaceStructuralPoint", context: bpy.types.Context) -> None:
@@ -3975,16 +4027,16 @@ def move_placed_point(props: "PlaceStructuralPoint", context: bpy.types.Context)
     if not PLACE_DIALOG_OPEN[0] or PLACE_FILLING[0]:
         return
     put_placed_point(props, context)
-    fill_place_inputs(props, PLACE_MODE_INPUTS[props.input_mode])
+    fill_place_inputs(props, get_typed_inputs(props))
 
 
 def put_placed_point(props: "PlaceStructuralPoint", context: bpy.types.Context) -> None:
     """Move the point to where it is entered from the one it is placed from, keeping its Y, with the moments
     previewed, to be put back on cancelling"""
     point_obj, origin = get_place_objects(props)
-    if not point_obj or origin is None:
+    if not point_obj or origin is None or (offset := get_place_offset(props, origin)) is None:
         return
-    dx, dz = get_place_offset(props)
+    dx, dz = offset
     at = get_vertex_location(point_obj)
     MOMENT_CENTRE_PREVIEW.setdefault(point_obj.name, point_obj.matrix_world.translation.copy())
     point_obj.matrix_world.translation += Vector((origin.x + dx, at.y, origin.z + dz)) - at
@@ -4005,6 +4057,9 @@ def fill_place_inputs(props: "PlaceStructuralPoint", keep: tuple[str, ...] = ())
     at = get_vertex_location(point_obj)
     dx, dz = at.x - origin.x, at.z - origin.z
     values = {"dx": dx, "dz": dz, "distance": math.hypot(dx, dz)}
+    # The known Δx or Δz from where it is measured, if not From's point.
+    if (axis := get_known_axis(props)) and (length_origin := get_length_origin(props, origin)) is not None:
+        values["d" + axis] = (at - length_origin)[0 if axis == "x" else 2]
     if dx or dz:
         values["direction"], values["angle"], _, _ = tool.Structural.get_eighth(dx, dz)
         values["rise"], values["run"] = tool.Structural.get_simple_slope(abs(dx), abs(dz))
@@ -4031,8 +4086,8 @@ class PlaceStructuralPoint(
     bl_idname = "bim.place_structural_point"
     bl_label = "Place Point"
     bl_description = (
-        "Move the active structural point to a distance and direction from another point, as a force is entered, or "
-        "by Δx and Δz, previewing it and the moments"
+        "Move the active structural point to a distance and direction from another point, as a force is entered, "
+        "along a direction until a Δx or Δz, or by Δx and Δz, previewing it and the moments"
     )
     bl_options = {"REGISTER", "UNDO"}
     point_id: bpy.props.IntProperty(options={"HIDDEN", "SKIP_SAVE"})
@@ -4058,6 +4113,26 @@ class PlaceStructuralPoint(
     dz: bpy.props.FloatProperty(
         name="Δz", description="From the other point to this one, along Z", subtype="DISTANCE", update=move_placed_point
     )
+    known: bpy.props.EnumProperty(
+        name="Length",
+        description="The length known along the direction",
+        items=[
+            ("DISTANCE", "Distance", "The distance along the direction"),
+            ("DX", "Δx", "Follow the direction until this Δx, as along a member to a point above another"),
+            ("DZ", "Δz", "Follow the direction until this Δz, as along a member's slope to a height"),
+        ],
+        default="DISTANCE",
+        update=refill_place_inputs,
+    )
+    length_from: bpy.props.EnumProperty(
+        name="Measured From",
+        description=(
+            "The point the known Δx or Δz is measured from, when not the one it is placed from, as a height above "
+            "another point"
+        ),
+        items=get_place_length_from_items,
+        update=refill_place_inputs,
+    )
 
     @classmethod
     def poll(cls, context):
@@ -4073,6 +4148,8 @@ class PlaceStructuralPoint(
         ids = [item[0] for item in get_place_from_items(self, context)]
         # The one placed from last, or else the first other point, or the origin if there is none.
         self.from_point = PLACE_FROM_LAST[0] if PLACE_FROM_LAST[0] in ids else ids[min(1, len(ids) - 1)]
+        get_place_length_from_items(self, context)
+        self.length_from = "SAME"
         fill_place_inputs(self.properties)
         PLACE_DIALOG_OPEN[0] = True
         return context.window_manager.invoke_props_dialog(self)
@@ -4086,16 +4163,30 @@ class PlaceStructuralPoint(
         layout.row().prop(self, "input_mode", expand=True)
         if self.input_mode == "COMPONENTS":
             layout.prop(self, "dx")
-            layout.prop(self, "dz")
+            row = layout.row(align=True)
+            row.prop(self, "dz")
+            row.prop(self, "length_from", text="From")
             return
         self.draw_direction_inputs(layout)
-        layout.prop(self, "distance")
-        dx, dz = get_place_offset(self)
+        layout.row().prop(self, "known", expand=True)
+        if self.known == "DISTANCE":
+            layout.prop(self, "distance")
+        else:
+            row = layout.row(align=True)
+            row.prop(self, "dx" if self.known == "DX" else "dz")
+            row.prop(self, "length_from", text="From")
+        _, origin = get_place_objects(self)
+        offset = get_place_offset(self, origin) if origin is not None else None
+        if offset is None:
+            layout.label(text="The direction never reaches that length", icon="ERROR")
+            return
+        dx, dz = offset
         length_scale = ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get())
         unit = get_project_unit_symbol("LENGTHUNIT", "m")
-        layout.label(
-            text=f"Δx = {dx / length_scale:.4f}   Δz = {dz / length_scale:.4f} {unit}", icon="ORIENTATION_GLOBAL"
-        )
+        text = f"Δx = {dx / length_scale:.4f}   Δz = {dz / length_scale:.4f}"
+        if self.known != "DISTANCE":
+            text += f"   Distance = {math.hypot(dx, dz) / length_scale:.4f}"
+        layout.label(text=f"{text} {unit}", icon="ORIENTATION_GLOBAL")
 
     def cancel(self, context):
         PLACE_DIALOG_OPEN[0] = False
@@ -4105,6 +4196,9 @@ class PlaceStructuralPoint(
         PLACE_DIALOG_OPEN[0] = False
         point_obj, origin = get_place_objects(self)
         if not point_obj or origin is None:
+            return {"CANCELLED"}
+        if get_place_offset(self, origin) is None:
+            self.report({"ERROR"}, "The direction never reaches that length, or it is measured from a point with none")
             return {"CANCELLED"}
         put_placed_point(self, context)  # Where the inputs say, as when run again from the last-operator panel.
         MOMENT_CENTRE_PREVIEW.clear()  # It stays where the preview left it.

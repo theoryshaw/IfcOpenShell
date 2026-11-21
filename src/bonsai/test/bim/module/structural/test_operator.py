@@ -644,6 +644,100 @@ class TestPlacingAPoint(NewFile):
         at = c_obj.matrix_world @ c_obj.data.vertices[0].co
         assert (at.x, at.z) == pytest.approx((2.0, 1.25))
 
+    def test_placing_by_components_with_dz_from_another_point(self):
+        # As Example 2.19 dimensions a joint: Δx from B, but 4' above A.
+        ifc, b, c, c_obj = self.setup_points()
+        a, _ = self.add_point(ifc, "A", 0.0, 2.0)
+        bpy.context.view_layer.update()
+        bpy.ops.bim.place_structural_point(
+            point_id=c.id(), from_point=str(b.id()), input_mode="COMPONENTS", dx=-0.3, dz=0.4, length_from=str(a.id())
+        )
+        at = c_obj.matrix_world @ c_obj.data.vertices[0].co
+        assert (at.x, at.z) == pytest.approx((0.7, 2.4))
+
+    def test_level_with_another_point(self):
+        ifc, b, c, c_obj = self.setup_points()
+        a, _ = self.add_point(ifc, "A", 0.0, 2.0)
+        bpy.context.view_layer.update()
+        bpy.ops.bim.place_structural_point(
+            point_id=c.id(), from_point=str(b.id()), input_mode="COMPONENTS", dx=0.5, dz=0.0, length_from=str(a.id())
+        )
+        at = c_obj.matrix_world @ c_obj.data.vertices[0].co
+        assert (at.x, at.z) == pytest.approx((1.5, 2.0))
+
+    def test_the_inputs_read_dz_from_the_point_it_is_measured_from(self):
+        from bonsai.bim.module.structural.operator import fill_place_inputs
+
+        ifc, b, c, c_obj = self.setup_points()
+        a, _ = self.add_point(ifc, "A", 0.0, 2.0)
+        bpy.context.view_layer.update()
+        props = SimpleNamespace(
+            point_id=c.id(), from_point=str(b.id()), input_mode="COMPONENTS", length_from=str(a.id()), dx=0.0, dz=0.0
+        )
+        props.distance = props.direction = props.angle = props.rise = props.run = None
+        props.known = "DISTANCE"
+        fill_place_inputs(props)
+        # C at (3, 0): 2 right of B, 2 below A.
+        assert (props.dx, props.dz) == pytest.approx((2.0, -2.0))
+
+    def test_placing_along_a_slope_until_a_dz(self):
+        # As Example 2.19's D: along the member from B, rising 4 in 3 to the left, until it is a height above B.
+        _, b, c, c_obj = self.setup_points()
+        bpy.ops.bim.place_structural_point(
+            point_id=c.id(),
+            from_point=str(b.id()),
+            input_mode="SLOPE",
+            direction="Q4",
+            rise=4.0,
+            run=3.0,
+            known="DZ",
+            dz=1.0,
+        )
+        at = c_obj.matrix_world @ c_obj.data.vertices[0].co
+        assert (at.x, at.z) == pytest.approx((1.0 - 0.75, 1.5))
+
+    def test_placing_along_a_slope_until_a_height_above_another_point(self):
+        ifc, b, c, c_obj = self.setup_points()
+        a, _ = self.add_point(ifc, "A", 0.0, 2.0)
+        bpy.context.view_layer.update()
+        bpy.ops.bim.place_structural_point(
+            point_id=c.id(),
+            from_point=str(b.id()),
+            input_mode="SLOPE",
+            direction="Q4",
+            rise=4.0,
+            run=3.0,
+            known="DZ",
+            dz=0.4,
+            length_from=str(a.id()),
+        )
+        at = c_obj.matrix_world @ c_obj.data.vertices[0].co
+        # Up 2.4 - 0.5 = 1.9 from B, so 1.9 x 3/4 to the left.
+        assert (at.x, at.z) == pytest.approx((1.0 - 1.425, 2.4))
+
+    def test_placing_at_an_angle_until_a_dx(self):
+        _, b, c, c_obj = self.setup_points()
+        bpy.ops.bim.place_structural_point(
+            point_id=c.id(), from_point=str(b.id()), input_mode="ANGLE", direction="Q1", angle=45.0, known="DX", dx=0.5
+        )
+        at = c_obj.matrix_world @ c_obj.data.vertices[0].co
+        assert (at.x, at.z) == pytest.approx((1.5, 1.0))
+
+    def test_a_direction_that_never_reaches_the_length_leaves_the_point(self):
+        _, b, c, c_obj = self.setup_points()
+        with pytest.raises(RuntimeError, match="never reaches"):
+            bpy.ops.bim.place_structural_point(
+                point_id=c.id(),
+                from_point=str(b.id()),
+                input_mode="ANGLE",
+                direction="Q1",
+                angle=0.0,
+                known="DZ",
+                dz=0.3,
+            )
+        at = c_obj.matrix_world @ c_obj.data.vertices[0].co
+        assert (at.x, at.z) == pytest.approx((3.0, 0.0))
+
 
 class TestDuplicateStructuralLoadCase(NewFile):
     def test_duplicating_a_load_case_and_telling_the_callbacks(self):

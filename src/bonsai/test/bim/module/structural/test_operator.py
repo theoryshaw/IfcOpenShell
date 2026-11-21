@@ -1136,3 +1136,32 @@ class TestMovingLoadsToAPoint(NewFile):
             if a.AssignedToStructuralItem[0].RelatingElement == points["L"]
         )
         assert tool.Structural.get_applied_moment(at_l.AppliedLoad) == pytest.approx(-20.0)
+
+    def test_moved_and_shared_loads_are_marked(self):
+        from bonsai.bim.module.structural.load_decoration_data import ShaderInfo
+
+        ifc, model, case, points, loads = self.setup_roof()
+        bpy.ops.bim.move_structural_loads_to_point(load_case=case.id(), point=str(points["ROOF"].id()), target="NEW")
+        target, moved = self.get_moved(ifc, case)
+        # The 12 at L also applied at R, by sharing its definition, in another load case.
+        shared = ifcopenshell.api.structural.add_structural_activity(
+            ifc, applied_load=loads["L"], structural_member=points["R"], ifc_class="IfcStructuralPointAction"
+        )
+        ifcopenshell.api.group.assign_group(ifc, products=[shared], group=target)
+        marks = ShaderInfo(target).get_load_marks()
+        assert marks[moved.id()] == ("At Roof", None)
+        # At L and at R: both uses tagged alike. The 10 at R, at one point, is not.
+        original = next(a for a in ifc.get_inverse(loads["L"]) if a.is_a("IfcStructuralActivity") and a != shared)
+        assert marks[shared.id()] == marks[original.id()] == (None, "①")
+        assert marks[next(a for a in ifc.get_inverse(loads["R"]) if a.is_a("IfcStructuralActivity")).id()] == (
+            None,
+            None,
+        )
+        # Reports mark them as the drawing does, and say what the marks mean.
+        from bonsai.bim.module.structural.report import get_marked_name, get_marks_note
+
+        assert get_marked_name("12 kip", shared.id(), marks) == "12 kip ①"
+        assert get_marked_name("Moved", moved.id(), marks) == "Moved ← At Roof"
+        note = get_marks_note([moved.id(), shared.id()], marks)
+        assert "moved load" in note and "circled number" in note
+        assert get_marks_note([], marks) == ""

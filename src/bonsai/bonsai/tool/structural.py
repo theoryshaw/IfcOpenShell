@@ -1177,6 +1177,31 @@ class Structural(bonsai.core.tool.Structural):
         cls.edit_bbim_structural(case, {"MovedLoads": json.dumps(entries) if entries else None})
 
     @classmethod
+    def get_load_marks(cls) -> dict[int, tuple[Union[str, None], Union[str, None]]]:
+        """How each point load is told apart from loads applied at their own points, by its applied load's id: the
+        name of the load case it was moved from, if it is a moved load, an equivalent of loads elsewhere; and a tag,
+        ①, ② and on, shared by every use of a load definition that acts at more than one point, the same load
+        there. The same load at the same point in several load cases, as one per moment centre, is not tagged."""
+        ifc_file = tool.Ifc.get()
+        moved = {}
+        for group in ifc_file.by_type("IfcStructuralLoadGroup"):
+            for entry in cls.get_moved_loads(group):
+                try:
+                    moved[ifc_file.by_guid(entry["Activity"]).id()] = ifc_file.by_guid(entry["From"]).Name or "Unnamed"
+                except RuntimeError:
+                    continue
+        tags, marks = {}, {}
+        for load in sorted(ifc_file.by_type("IfcStructuralLoadSingleForce"), key=lambda load: load.id()):
+            users = [i for i in ifc_file.get_inverse(load) if i.is_a("IfcStructuralActivity")]
+            items = {c[0].RelatingElement.id() for u in users if (c := u.AssignedToStructuralItem)}
+            if len(items) > 1:
+                n = len(tags) + 1
+                tags[load.id()] = chr(0x245F + n) if n <= 20 else f"#{n}"  # ① to ⑳.
+            for user in users:
+                marks[user.id()] = (moved.get(user.id()), tags.get(load.id()))
+        return marks
+
+    @classmethod
     def get_moved_from(cls, activity: ifcopenshell.entity_instance) -> Union[ifcopenshell.entity_instance, None]:
         """The load case an applied load was moved from, if it is one kept in step with it"""
         for case in tool.Ifc.get().by_type("IfcStructuralLoadGroup"):

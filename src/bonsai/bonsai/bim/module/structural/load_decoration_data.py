@@ -177,6 +177,7 @@ class ShaderInfo:
         self.surface_members = {}
         self.get_force_units()
         self.get_structural_elements_and_activities()
+        self.load_marks = self.get_load_marks()
         # A load case shown with the active one draws its loads alone: its moments are the active one's to draw.
         self.moment_force_scale = None if self.also_shown else self.get_moment_force_scale()
         # While moments are taken about a point, the viewport numbers forces as their moments are, across the load
@@ -556,7 +557,22 @@ class ShaderInfo:
                 self.get_point_force_args(activity_list, conn_location, rotation, slope)
                 # Moments keep their own symbol; forces are drawn above.
                 loads = self.get_point_loads_values(activity_list, rotation)
-                self.get_point_moment_args(loads[3:], conn_location, rotation)
+                # A couple a moved load brings names where it came from, as its force does.
+                sources = sorted(
+                    {
+                        source
+                        for activity, _ in activity_list
+                        if (source := self.load_marks.get(activity.id(), (None, None))[0])
+                        and tool.Structural.get_applied_moment(activity.AppliedLoad)
+                    }
+                )
+                suffix = f" ← {', '.join(sources)}" if sources else ""
+                self.get_point_moment_args(loads[3:], conn_location, rotation, suffix)
+
+    def get_load_marks(self) -> dict[int, tuple[Union[str, None], Union[str, None]]]:
+        """For each point load, by its applied load's id, the load case it was moved from and its shared tag, if
+        any, as tool.Structural.get_load_marks gives them"""
+        return tool.Structural.get_load_marks()
 
     def get_moment_forces(self) -> list[tuple[ifcopenshell.entity_instance, int, np.ndarray, np.ndarray]]:
         """Each point force drawn, as its point, its applied load's id, its point's location and its force in global
@@ -1261,6 +1277,9 @@ class ShaderInfo:
             if has_angle:
                 label += self.get_unknown_marks(activity)[0]
             force_of = activity if has_angle else 0
+            # A lone force drawn as its components, with no resultant over them, is marked on them: its first labelled.
+            lone = single if not has_angle and not show_resultant else 0
+            marks = {"mark_of": lone, "mark_label": bool(force_of) or i == 0}
             side = None  # Beside a tip-to-tail chain's polygon, if it is one.
             if has_angle and activity in pushes:
                 # Slid along its line to pull, with the line it arrives along shown beyond the point.
@@ -1269,10 +1288,20 @@ class ShaderInfo:
             if arriving:
                 side = None
                 picked = self.add_force_arrow(
-                    flip(tip), flip(tail), color, label, size, activity=activity, force_of=force_of, label_at_tail=True
+                    flip(tip),
+                    flip(tail),
+                    color,
+                    label,
+                    size,
+                    activity=activity,
+                    force_of=force_of,
+                    label_at_tail=True,
+                    **marks,
                 )
             elif centre is None:
-                picked = self.add_force_arrow(tail, tip, color, label, size, activity=activity, force_of=force_of)
+                picked = self.add_force_arrow(
+                    tail, tip, color, label, size, activity=activity, force_of=force_of, **marks
+                )
             else:
                 side = self.get_label_side(vector, (tail + tip) / 2 - centre)
                 onward = vector / np.linalg.norm(vector) + side  # Past the tip, leaning outside the polygon.
@@ -1285,6 +1314,7 @@ class ShaderInfo:
                     label_away=onward / np.linalg.norm(onward),
                     activity=activity,
                     force_of=force_of,
+                    **marks,
                 )
             if not has_angle:
                 # A component, tagged with its axis so that a report can name it, as F_x1 or R_x.
@@ -1954,26 +1984,47 @@ class ShaderInfo:
         resultant_of: Union[list[int], None] = None,
         force_of: int = 0,
         label_at_tail: bool = False,
+        mark_of: int = 0,
+        mark_label: bool = True,
     ) -> Union[int, None]:
         """Add an arrow from tail to tip, its head and shaft sized to size, the longest arrow drawn with it.
 
         :param force_of: The activity whose whole force the arrow is, not a component, to name it in a report.
         :param label_at_tail: Label it beyond its tail, as a push arriving at its point is.
+        :param mark_of: The activity it stands for, if not its force_of, as a lone force's components do.
+        :param mark_label: Whether its label names that activity's marks, which one of its arrows does.
         """
         length = np.linalg.norm(tip - tail)
         if not length:
             return
+        # A moved load, an equivalent kept in step with loads elsewhere, is drawn with a dashed shaft, as statics
+        # draws an equivalent, and names where it came from; a load definition acting at several points is tagged,
+        # every use alike, as editing one edits the others.
+        marked = mark_of or force_of
+        moved, tag = getattr(self, "load_marks", {}).get(marked, (None, None)) if marked else (None, None)
+        if moved and mark_label:
+            label = f"{label} ← {moved}"
+        elif tag and mark_label:
+            label = f"{label} {tag}"
         direction = (tip - tail) / length
         # The shader works in units of a fifth of size: the head is 2 * spacing of them long.
         unit = size / 5
         thickness = tool.Structural.get_structural_props().arrow_thickness
+        arrow_tail = tail
+        if moved:
+            # Its head alone drawn as an arrow, and its shaft dashed up to it.
+            head = min(2 * spacing * thickness * unit, length * 0.5)
+            arrow_tail = tip - direction * head
+            # As wide as a solid shaft, which Arrow Thickness scales with its head.
+            self.add_dashed_line(tail, arrow_tail, size, color, thickness=3.0 * thickness)
+            length = head
         d2, d3 = self.get_perpendicular_axes(direction)
         d2, d3 = d2 * unit, d3 * unit
         self.info.append(
             {
                 "shader": self.shader.new("SINGLE FORCE"),
                 "args": {
-                    "position": [tip, tail + d2, tail - d2, tail + d3, tail - d3],
+                    "position": [tip, arrow_tail + d2, arrow_tail - d2, arrow_tail + d3, arrow_tail - d3],
                     "coord": [
                         (0, 0, 0),
                         (1, length / unit, 0),
@@ -1988,7 +2039,7 @@ class ShaderInfo:
                 # The arrow itself, for drawing it elsewhere than the viewport, as in a report.
                 "primitive": {
                     "type": "ARROW",
-                    "tail": tail,
+                    "tail": arrow_tail,
                     "tip": tip,
                     "size": size,
                     "spacing": spacing,
@@ -2017,9 +2068,16 @@ class ShaderInfo:
         return picked
 
     def add_dashed_line(
-        self, start: np.ndarray, end: np.ndarray, size: float, color: tuple, dashed: bool = True
+        self,
+        start: np.ndarray,
+        end: np.ndarray,
+        size: float,
+        color: tuple,
+        dashed: bool = True,
+        thickness: float = 1.0,
     ) -> None:
-        width = size * 0.003
+        """A line, dashed unless not, thickness times as wide as a construction line, as a moved load's shaft is"""
+        width = size * 0.003 * thickness
         length = np.linalg.norm(end - start)
         if not length:
             return
@@ -2036,13 +2094,22 @@ class ShaderInfo:
                 "indices": indices,
                 # A spacing far longer than the line draws it solid.
                 "uniforms": [["color", color], ["spacing", size * 0.03 if dashed else size * 1000]],
-                "primitive": {"type": "LINE", "start": start, "end": end, "size": size, "dashed": dashed},
+                "primitive": {
+                    "type": "LINE",
+                    "start": start,
+                    "end": end,
+                    "size": size,
+                    "dashed": dashed,
+                    "thickness": thickness,
+                },
                 "color": color,
             }
         )
 
-    def get_point_moment_args(self, moments: Iterable, location: np.ndarray, rotation: np.ndarray) -> None:
-        """get the args to the point shader for the X, Y and Z moments at a point"""
+    def get_point_moment_args(
+        self, moments: Iterable, location: np.ndarray, rotation: np.ndarray, suffix: str = ""
+    ) -> None:
+        """get the args to the point shader for the X, Y and Z moments at a point, their labels ending in suffix"""
         location = np.array(location)
         directions: list[tuple[npt.NDArray, npt.NDArray]] = [
             (np.array((0, 1, 0)), np.array((0, 0, 1))),
@@ -2073,7 +2140,7 @@ class ShaderInfo:
             self.text_info.append(
                 {
                     "position": location + 0.25 * (d1 + d2),
-                    "text": f"{moment:.{decimals}f} {self.moment_unit}",
+                    "text": f"{moment:.{decimals}f} {self.moment_unit}{suffix}",
                     "color": color,
                 }
             )

@@ -176,6 +176,8 @@ def get_moment_calculation(
     text_unit = r"\ \text{" + re.sub(r"([#$%&_{}])", r"\\\1", unit) + "}"
     length_text = r"\ \text{" + re.sub(r"([#$%&_{}])", r"\\\1", length_unit) + "}"
     rows, steps, palette, values, unknowns = [], [], [], [], []
+    # Moved and shared loads, told apart in the table as in the drawing.
+    marks, marked = tool.Structural.get_load_marks(), []
     place_kind, place_activity = tool.Structural.get_moment_centre_unknown(case)
     on_axes = tool.Structural.get_structural_props().show_axes_components
     for item in tool.Structural.get_point_items(case):
@@ -195,7 +197,9 @@ def get_moment_calculation(
             color = get_svg_color(colors.get(activity.id(), (1, 1, 1, 2)))
             palette.append(color)
             values.append(moment)
-            row = get_table_row(f"F_{{{i}}}", activity.AppliedLoad.Name or "Unnamed", math.hypot(x, z), "", [], color)
+            name = get_marked_name(activity.AppliedLoad.Name or "Unnamed", activity.id(), marks)
+            marked.append(activity.id())
+            row = get_table_row(f"F_{{{i}}}", name, math.hypot(x, z), "", [], color)
             row |= {
                 "at": item.Name or "Unnamed",
                 "dx": f"{dx:.2f}",
@@ -237,7 +241,9 @@ def get_moment_calculation(
         color = get_svg_color(get_force_colors(drawing, item).get(activity.id(), (1, 1, 1, 2)))
         palette.append(color)
         values.append(moment)
-        row = get_table_row(f"M_{{{i}}}", activity.AppliedLoad.Name or "Unnamed", abs(moment), "", [], color)
+        name = get_marked_name(activity.AppliedLoad.Name or "Unnamed", activity.id(), marks)
+        marked.append(activity.id())
+        row = get_table_row(f"M_{{{i}}}", name, abs(moment), "", [], color)
         row |= {"at": item.Name or "Unnamed", "dx": "", "dz": "", "arm": "", "moment": f"{moment:+.2f} {unit}"}
         row["magnitude"] += f" {unit} (applied)"
         rows.append(row)
@@ -273,6 +279,7 @@ def get_moment_calculation(
         "summary": f"{'ΣM' if len(values) > 1 else 'M'} about {tool.Structural.get_centre_symbol(case)} = "
         f"{total:+.2f} {unit}, counter-clockwise positive.",
         "unit": unit,
+        "marks_note": get_marks_note(marked, marks),
         "length_unit": length_unit,
     }
 
@@ -549,6 +556,7 @@ def get_resultant_calculation(
     # Each force in the colour of its arrow. Markdown keeps colour only in math, so symbols are coloured there.
     palette = [(colors or {}).get(activity.id(), NEUTRAL) for activity in activities]
     sources = get_link_sources(forces)
+    marks = tool.Structural.get_load_marks()  # Moved and shared loads, told apart.
     rows = []
     for i, (force, color) in enumerate(zip(forces, palette)):
         found = [text for text, locked in zip(("magnitude", "direction"), force["locks"]) if not locked]
@@ -561,7 +569,8 @@ def get_resultant_calculation(
             found[found.index("magnitude")] = (
                 f"magnitude = {symbol}" if math.isclose(k, 1.0) else f"magnitude = {k:g} × {symbol}"
             )
-        rows.append(get_table_row(force["symbol"], force["name"], force["magnitude"], force["direction"], found, color))
+        name = get_marked_name(force["name"], activities[i].id(), marks)
+        rows.append(get_table_row(force["symbol"], name, force["magnitude"], force["direction"], found, color))
         rows[-1]["magnitude"] += f" {unit}"
     solving, find = get_solving_steps(forces, text_unit, resultant_eighth)
     # Components first, then the unknowns found from them, then the resultant with what was found.
@@ -626,6 +635,7 @@ def get_resultant_calculation(
             else ""
         ),
         # A push added to other forces is drawn, and added, as a pull along its line.
+        "marks_note": get_marks_note([activity.id() for activity in activities], marks),
         "push_note": (
             "By the principle of transmissibility, a push is added as a pull along its line of action."
             if len(forces) > 1 and any(force.get("push") for force in forces)
@@ -713,6 +723,31 @@ def get_tilted_steps(
             total = sum(v for _, v in values)
             steps.append(f"R_{{{name}}} = \\Sigma F_{{{name}}} = {symbols} = {numbers} = {total:.2f}{text_unit}")
     return steps
+
+
+def get_marked_name(name: str, activity: int, marks: dict[int, tuple]) -> str:
+    """A load's name in a table, marked as the drawing marks it, if it is a moved or a shared load"""
+    moved, tag = marks.get(activity, (None, None))
+    if moved:
+        return f"{name} ← {moved}"
+    return f"{name} {tag}" if tag else name
+
+
+def get_marks_note(activities: list[int], marks: dict[int, tuple]) -> str:
+    """What the marks on loads mean, if any of these loads has one"""
+    found = [marks.get(activity, (None, None)) for activity in activities]
+    notes = []
+    if any(moved for moved, _ in found):
+        notes.append(
+            "A load marked ← and drawn with a dashed shaft is a moved load: the equivalent, a force and a couple, of "
+            "the named load case's loads moved here, kept in step with them."
+        )
+    if any(tag for _, tag in found):
+        notes.append(
+            "Loads marked with the same circled number are one load definition acting at several points: a change "
+            "to one changes them all."
+        )
+    return " ".join(notes)
 
 
 def get_table_row(
@@ -1365,9 +1400,12 @@ def write_diagram(
         color, size = get_svg_color(shape["color"]), shape["size"] * scale
         if shape["type"] == "LINE":
             (x1, y1), (x2, y2) = to_svg(shape["start"]), to_svg(shape["end"])
+            # A moved load's dashed shaft is drawn as wide as an arrow's, which Arrow Thickness scales.
+            width = 2.0 * shape["thickness"] / 3.0 if shape.get("thickness", 1.0) > 1.0 else 1.0
             dash = f' stroke-dasharray="{size * 0.03:.1f} {size * 0.03:.1f}"' if shape["dashed"] else ""
             elements.append(
-                f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" stroke="{color}" stroke-width="1"{dash}/>'
+                f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" stroke="{color}" '
+                f'stroke-width="{width:.2f}"{dash}/>'
             )
             if not shape["dashed"]:
                 segments.append(((x1, y1), (x2, y2)))  # Arcs and slope triangles; dashed guides may be crossed.

@@ -573,6 +573,27 @@ class ShaderInfo:
                     forces.append((point, item[0].id(), location, force))
         return forces
 
+    def get_applied_moments(self) -> list[tuple[ifcopenshell.entity_instance, int, np.ndarray, float]]:
+        """Each moment applied as a load at a point drawn, as its point, its applied load's id, its point's location
+        and its moment in the X-Z plane, counter-clockwise positive, in force times length, as get_moment_forces
+        orders forces"""
+        moments = []
+        torque_scale = tool.Structural.get_torque_scale()
+        for value in sorted(self.point_members.values(), key=lambda v: (v["member"].Name or "", v["member"].id())):
+            point = value["member"]
+            obj = tool.Ifc.get_object(point)
+            if not obj or obj.type != "MESH" or not obj.data.vertices:
+                continue
+            location = np.array(obj.matrix_world @ obj.data.vertices[0].co, dtype=float)
+            rotation, _ = self.preview_axes.get(point.id(), (None, None))
+            rotation = self.get_point_connection_rotation(point) if rotation is None else rotation
+            items = sorted(value["activities"], key=lambda item: tool.Structural.get_draw_order_key(item[0]))
+            for item in items:
+                # MomentY by the right-hand rule about +Y: counter-clockwise seen from -Y is its negative.
+                if moment := -float(self.get_point_loads_values([item], rotation)[4]) * torque_scale:
+                    moments.append((point, item[0].id(), location, moment))
+        return moments
+
     def get_moment_centre(
         self,
     ) -> tuple[
@@ -611,7 +632,8 @@ class ShaderInfo:
         its line of action, its moment arm from the centre, and their sum as a curved arrow at the centre.
 
         Moments are counter-clockwise positive as the X-Z plane is seen from -Y, as statics texts take them.
-        Moments applied as loads are left out: they are in the project's torque unit, not force times length.
+        Moments applied as loads, as couples are, are labelled at their points and counted in the sum, in force
+        times length.
         """
         props = tool.Structural.get_structural_props()
         ifc_file = tool.Ifc.get()
@@ -706,8 +728,24 @@ class ShaderInfo:
                     # Clear of Δx and Δz too, now drawn.
                     drawn = self.get_drawn_points(starts[-1][0], starts[-1][1], point_obj.name if point_obj else None)
                     self.add_axes_moment_dimensions(i, at, location, size, color, length_scale, rotation, drawn, at_end)
+        # Moments applied as loads, as couples are, the same about any point: each numbered after the forces' and
+        # labelled at its point, and in the sum.
+        couples_from = len(self.text_info)
+        applied = self.get_applied_moments()
+        for i, (point, activity, location, moment) in enumerate(applied, len(forces) + 1):
+            total += moment
+            point_obj = tool.Ifc.get_object(point)
+            self.text_info.append(
+                {
+                    "position": location,
+                    "text": f"{get_plain_symbol(f'M_{{{i}}}')} = {moment:+.{decimals}f} {self.moment_unit} (applied)",
+                    "color": colors.get(activity, (1, 1, 1, 1)),
+                    "away": np.array((0, 0, -1.0)),
+                    "visible_with": (obj.name, point_obj.name) if point_obj else (obj.name,),
+                }
+            )
         # Each force's moment hides with its point as its force does, and all of them with the centre.
-        ends = [(info, text) for info, text, _, _ in starts[1:]] + [(len(self.info), len(self.text_info))]
+        ends = [(info, text) for info, text, _, _ in starts[1:]] + [(len(self.info), couples_from)]
         for (info, text, point, activity), (info_end, text_end) in zip(starts, ends):
             point_obj = tool.Ifc.get_object(point)
             for entry in self.info[info:info_end] + self.text_info[text:text_end]:
@@ -721,7 +759,8 @@ class ShaderInfo:
                         label["text"] += " 🔓"
             self.add_moment_pickable(info, info_end, texts, group.id(), point.id(), activity)
         symbol = tool.Structural.get_centre_symbol(group)
-        self.add_moment_arrow(at, total, size, f"ΣM_{symbol}" if len(forces) > 1 else f"M_{symbol}", group.id())
+        terms = len(forces) + len(applied)
+        self.add_moment_arrow(at, total, size, f"ΣM_{symbol}" if terms > 1 else f"M_{symbol}", group.id())
         if self.load_group is not None:
             # A report's diagram stands alone, so it also draws what the viewport has around it.
             self.add_moment_context(centre, at, forces, size, reach, colors)

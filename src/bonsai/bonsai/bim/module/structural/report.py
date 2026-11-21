@@ -160,7 +160,7 @@ def get_moment_calculation(
 
     Each force's moment is found as its magnitude times its moment arm, then by Varignon's theorem from its
     components and their distances from A, and they are added. Moments are counter-clockwise positive as the
-    X-Z plane is seen from -Y; moments applied as loads are left out, as the viewport leaves them out.
+    X-Z plane is seen from -Y; moments applied as loads, as couples are, are added as they are.
     """
     centre = tool.Structural.get_moment_centre(case)
     if not centre or not (centre_obj := tool.Ifc.get_object(centre)) or centre_obj.type != "MESH":
@@ -230,6 +230,18 @@ def get_moment_calculation(
                     f"M_{{{i}}} = F_{{z{i}}}\\, \\Delta x_{{{i}}} - F_{{x{i}}}\\, \\Delta z_{{{i}}} = ({z:.2f})({dx:.2f})"
                     f" - ({x:.2f})({dz:.2f}) = {moment:.2f}{text_unit}"
                 )
+    # Moments applied as loads, as couples are: the same about any point, so taken as they are.
+    for activity, moment in tool.Structural.get_case_applied_moments(case):
+        i = len(values) + 1
+        item = activity.AssignedToStructuralItem[0].RelatingElement
+        color = get_svg_color(get_force_colors(drawing, item).get(activity.id(), (1, 1, 1, 2)))
+        palette.append(color)
+        values.append(moment)
+        row = get_table_row(f"M_{{{i}}}", activity.AppliedLoad.Name or "Unnamed", abs(moment), "", [], color)
+        row |= {"at": item.Name or "Unnamed", "dx": "", "dz": "", "arm": "", "moment": f"{moment:+.2f} {unit}"}
+        row["magnitude"] += f" {unit} (applied)"
+        rows.append(row)
+        steps.append(f"M_{{{i}}} = {moment:.2f}{text_unit}\\ \\text{{(applied, the same about any point)}}")
     if not values:
         return None
     total = sum(values)
@@ -564,6 +576,12 @@ def get_resultant_calculation(
     components, steps, summary = get_sum_steps(
         forces, text_unit, unit, found if solving else None, resultant_found, resultant_eighth
     )
+    # Moments applied at the point too, as couples are: with them the resultant is a force and a couple there.
+    if couple := sum(tool.Structural.get_applied_moment(activity.AppliedLoad) for activity in activities):
+        length_unit = ifcopenshell.util.unit.get_project_unit(tool.Ifc.get(), "LENGTHUNIT")
+        length = ifcopenshell.util.unit.get_unit_symbol(length_unit) if length_unit else "m"
+        sense = "counter-clockwise" if couple > 0 else "clockwise"
+        summary += f", with a couple M = {couple:+.2f} {unit}.{length} ({sense})"
     # The resultant too. What of it was found follows from how many force values were: two unknowns in all.
     total = [sum(force["vector"][k] for force in forces) for k in range(3)]
     # Rounding noise across an axis would put a resultant along it into the neighbouring eighth.

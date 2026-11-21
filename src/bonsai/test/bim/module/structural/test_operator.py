@@ -878,3 +878,98 @@ class TestChoosingTheMomentCentreOfALoadCase(NewFile):
         with mock.patch.object(structural_operator, "location_3d_to_region_2d", project):
             assert structural_operator.pick_point_connection(None, None, 95.0, 6.0) == points["B"]
             assert structural_operator.pick_point_connection(None, None, 50.0, 0.0) is None  # A miss.
+
+
+class TestAppliedMoments(NewFile):
+    """Example 2.20's force moved to B with its couple: 10 down at B and a moment of -50 applied at B, the same about
+    B, about C below it and about A, 5 to its right, as 10 down at A alone is"""
+
+    def add_point(self, ifc, name, x, z=0.0):
+        point = ifcopenshell.api.root.create_entity(ifc, ifc_class="IfcStructuralPointConnection", name=name)
+        mesh = bpy.data.meshes.new(name)
+        mesh.from_pydata([(0.0, 0.0, 0.0)], [], [])
+        obj = bpy.data.objects.new(name, mesh)
+        obj.location = (x, 0.0, z)
+        bpy.context.scene.collection.objects.link(obj)
+        tool.Ifc.link(point, obj)
+        return point
+
+    def setup_case(self, moment_y=50.0):
+        ifc = ifcopenshell.file(schema="IFC4")
+        tool.Ifc.set(ifc)
+        ifcopenshell.api.root.create_entity(ifc, ifc_class="IfcProject")
+        case = ifcopenshell.api.structural.add_structural_load_case(ifc, name="Force and couple at B")
+        points = {"A": self.add_point(ifc, "A", 0.0), "B": self.add_point(ifc, "B", -5.0)}
+        points["C"] = self.add_point(ifc, "C", -5.0, -15.0)
+        bpy.context.view_layer.update()
+        load = ifcopenshell.api.structural.add_structural_load(
+            ifc, name="Z -10 N", ifc_class="IfcStructuralLoadSingleForce"
+        )
+        load.ForceZ = -10.0
+        load.MomentY = moment_y  # By the right-hand rule about +Y: clockwise as the X-Z plane is seen from -Y.
+        activity = ifcopenshell.api.structural.add_structural_activity(
+            ifc, applied_load=load, structural_member=points["B"], ifc_class="IfcStructuralPointAction"
+        )
+        ifcopenshell.api.group.assign_group(ifc, products=[activity], group=case)
+        return ifc, case, points, load, activity
+
+    def test_an_applied_moment_is_counter_clockwise_positive(self):
+        _, _, _, load, _ = self.setup_case()
+        assert tool.Structural.get_applied_moment(load) == pytest.approx(-50.0)
+
+    def test_an_applied_moment_counts_the_same_about_any_point(self):
+        _, case, points, _, _ = self.setup_case()
+        assert tool.Structural.get_moment_about(case, points["B"]) == pytest.approx(-50.0)
+        assert tool.Structural.get_moment_about(case, points["C"]) == pytest.approx(-50.0)
+        # The force's +50 about A, and the couple's -50.
+        assert tool.Structural.get_moment_about(case, points["A"]) == pytest.approx(0.0)
+
+    def test_a_kept_moment_solves_with_the_applied_moment_known(self):
+        from bonsai.bim.module.structural.operator import solve_case_moment
+
+        _, case, points, load, activity = self.setup_case(moment_y=20.0)  # -20 applied.
+        tool.Structural.set_locks(activity, False, True)  # The force's magnitude is the unknown.
+        tool.Structural.set_moment_centre(case, points["A"])
+        # About A: the force at B, 5 to the left, makes the other -30, so 6 up.
+        changed, error = solve_case_moment(case, -50.0)
+        assert not error
+        assert changed[load] == pytest.approx((0.0, 0.0, 6.0))
+
+    def test_edit_load_keeps_the_moment_in_every_input_mode(self):
+        from bonsai.bim.module.structural.operator import get_load_attributes
+
+        _, _, _, load, _ = self.setup_case()
+        props = SimpleNamespace(
+            input_mode="ANGLE",
+            magnitude=10.0,
+            angle=0.0,
+            rise=1.0,
+            run=1.0,
+            direction="Q7",
+            x=0.0,
+            y=0.0,
+            z=0.0,
+            moment_x=0.0,
+            moment_y=0.0,
+            moment_z=0.0,
+            moment=-50.0,
+            given="MAGNITUDE",
+            given_value=0.0,
+            on_axes=False,
+            has_axes=False,
+            axes_tilt=0.0,
+        )
+        attributes = get_load_attributes(props, "IfcStructuralPointConnection", load)
+        assert attributes["MomentY"] == pytest.approx(50.0)
+        assert attributes["ForceZ"] == pytest.approx(-10.0)
+
+    def test_the_resultant_at_the_point_names_its_couple(self):
+        from bonsai.bim.module.structural.data import StructuralItemLoadsData
+        from bonsai.bim.module.structural.report import get_resultant_calculation
+
+        _, _, _, _, activity = self.setup_case()
+        summary = get_resultant_calculation([activity], "N")["summary"]
+        assert summary.startswith("R = 10.00 N")
+        assert summary.endswith(", with a couple M = -50.00 N.m (clockwise)")
+        label = StructuralItemLoadsData.get_resultant_label([(0.0, 0.0, -10.0)], -50.0)
+        assert "M = -50" in label and label.startswith("R = 10")

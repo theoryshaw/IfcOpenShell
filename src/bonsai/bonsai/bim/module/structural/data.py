@@ -265,6 +265,7 @@ class StructuralItemLoadsData:
                         "name": (case.Name or "Unnamed") if case else "No load case",
                         "loads": [],
                         "forces": [],
+                        "couple": 0.0,
                     },
                 )
                 load = activity.AppliedLoad
@@ -282,8 +283,9 @@ class StructuralItemLoadsData:
                 )
                 if is_force:
                     entry["forces"].append(tool.Structural.get_force(load))
+                    entry["couple"] += tool.Structural.get_applied_moment(load)
         for entry in cases.values():
-            entry["resultant"] = cls.get_resultant_label(entry.pop("forces"))
+            entry["resultant"] = cls.get_resultant_label(entry.pop("forces"), entry.pop("couple"))
             # As they are drawn tip to tail.
             entry["loads"].sort(key=lambda load: load.pop("order"))
             # The forces Edit Resultant adds up, as their resultant's arrow passes them, tip to tail.
@@ -292,7 +294,8 @@ class StructuralItemLoadsData:
         return sorted(cases.values(), key=lambda entry: entry["name"])
 
     @classmethod
-    def get_resultant_label(cls, forces: list[tuple[float, float, float]]) -> Union[str, None]:
+    def get_resultant_label(cls, forces: list[tuple[float, float, float]], couple: float = 0.0) -> Union[str, None]:
+        """The resultant of an item's forces, and of the moments applied at it, as couples are, if any"""
         if not forces:
             return None
         x, y, z = (sum(force[k] for force in forces) for k in range(3))
@@ -304,6 +307,10 @@ class StructuralItemLoadsData:
             # From the nearest axis, as forces are entered.
             eighth, angle, _, _ = tool.Structural.get_eighth(x, z)
             label += f" at {angle:.{props.angle_decimals}f}° {eighth}"
+        if couple:
+            length_unit = ifcopenshell.util.unit.get_project_unit(tool.Ifc.get(), "LENGTHUNIT")
+            length = ifcopenshell.util.unit.get_unit_symbol(length_unit) if length_unit else "m"
+            label += f", M = {couple:+.{props.force_decimals}f} {unit}·{length}"
         return label
 
     @classmethod

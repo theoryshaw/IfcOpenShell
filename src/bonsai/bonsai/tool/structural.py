@@ -537,9 +537,9 @@ class Structural(bonsai.core.tool.Structural):
     def get_moment_about(
         cls, case: ifcopenshell.entity_instance, centre: ifcopenshell.entity_instance
     ) -> Union[float, None]:
-        """The sum of the moments of a load case's point forces about a point connection, counter-clockwise
-        positive as the X-Z plane is seen from -Y, in its force unit times the project's length unit, or None if
-        it has no point forces. Moments applied as loads are left out, as the drawing leaves them out."""
+        """The sum of the moments of a load case's point forces about a point connection, and of the moments
+        applied as loads at its points, which are the same about any point, counter-clockwise positive as the X-Z
+        plane is seen from -Y, in its force unit times the project's length unit, or None if it has neither"""
         location = lambda obj: np.array(obj.matrix_world @ obj.data.vertices[0].co, dtype=float)
         has_point = lambda obj: obj and obj.type == "MESH" and obj.data.vertices
         if not has_point(centre_obj := tool.Ifc.get_object(centre)):
@@ -557,6 +557,9 @@ class Structural(bonsai.core.tool.Structural):
                 force = np.array(cls.get_force(load))
                 total += cls.get_moment(at, location(obj), force)[0] / length_scale
                 found = True
+        for _, moment in cls.get_case_applied_moments(case):
+            total += moment
+            found = True
         return total if found else None
 
     @classmethod
@@ -1093,6 +1096,41 @@ class Structural(bonsai.core.tool.Structural):
         """A single force load's force, in Blender's axes"""
         attributes = cls.to_blender_axes(load, {a: getattr(load, a) for a in ("ForceX", "ForceY", "ForceZ")})
         return tuple(attributes[a] or 0.0 for a in ("ForceX", "ForceY", "ForceZ"))
+
+    @classmethod
+    def get_torque_scale(cls) -> float:
+        """What a moment given in the project's torque unit is in its force unit times its length unit, as the
+        calculator sums moments: 1 if no torque unit is declared, as load drawings then take it to be"""
+        ifc_file = tool.Ifc.get()
+        if not ifc_file.by_type("IfcProject") or not ifcopenshell.util.unit.get_project_unit(ifc_file, "TORQUEUNIT"):
+            return 1.0
+        scale = ifcopenshell.util.unit.calculate_unit_scale
+        return scale(ifc_file, "TORQUEUNIT") / (scale(ifc_file, "FORCEUNIT") * scale(ifc_file))
+
+    @classmethod
+    def get_applied_moment(cls, load: ifcopenshell.entity_instance) -> float:
+        """A single force load's moment in the X-Z plane, applied as a load, as a couple is: counter-clockwise
+        positive as the plane is seen from -Y, as statics texts take it, which is IFC's MomentY turned the other
+        way, in the project's force unit times its length unit"""
+        if not load or not load.is_a("IfcStructuralLoadSingleForce"):
+            return 0.0
+        attributes = cls.to_blender_axes(load, {a: getattr(load, a) for a in ("MomentX", "MomentY", "MomentZ")})
+        if not (moment_y := attributes["MomentY"]):
+            return 0.0
+        return -moment_y * cls.get_torque_scale()
+
+    @classmethod
+    def get_case_applied_moments(
+        cls, case: ifcopenshell.entity_instance
+    ) -> list[tuple[ifcopenshell.entity_instance, float]]:
+        """A load case's moments applied as loads at its points, as their applied loads and moments, in the order
+        moments number them, leaving out those of none"""
+        moments = []
+        for item in cls.get_point_items(case):
+            for activity in cls.get_chain_activities(item, case):
+                if moment := cls.get_applied_moment(activity.AppliedLoad):
+                    moments.append((activity, moment))
+        return moments
 
     @classmethod
     def get_simple_slope(cls, x: float, z: float, max_denominator: int = 24) -> tuple[float, float]:

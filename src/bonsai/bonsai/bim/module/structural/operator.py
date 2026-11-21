@@ -1516,7 +1516,22 @@ def get_load_attributes(
     else:
         values += (0.0, 0.0, 0.0)
     attributes = {name: value or None for name, value in zip(force_attributes + moment_attributes, values)}
+    if category == "IfcStructuralPointConnection":
+        # The moment in the X-Z plane, as a couple is entered, in every input mode: counter-clockwise positive,
+        # which is IFC's MomentY turned the other way, in force times length, as moments are summed.
+        moment = getattr(props, "moment", 0.0)
+        attributes["MomentY"] = -moment / tool.Structural.get_torque_scale() if moment else None
     return tool.Structural.to_model_axes(load, attributes) if load else attributes
+
+
+def get_moment_unit_symbol() -> str:
+    """The project's force unit times its length unit, as applied moments are entered and moments summed"""
+    ifc_file = tool.Ifc.get()
+    force_unit = ifcopenshell.util.unit.get_project_unit(ifc_file, "FORCEUNIT")
+    length_unit = ifcopenshell.util.unit.get_project_unit(ifc_file, "LENGTHUNIT")
+    force = ifcopenshell.util.unit.get_unit_symbol(force_unit) if force_unit else "N"
+    length = ifcopenshell.util.unit.get_unit_symbol(length_unit) if length_unit else "m"
+    return f"{force}·{length}"
 
 
 is_normalising_angle = False
@@ -1941,6 +1956,15 @@ class StructuralForceInput(get_direction_input("the force", update_force_inputs,
     moment_x: bpy.props.FloatProperty(name="Moment X", update=update_force_inputs)
     moment_y: bpy.props.FloatProperty(name="Moment Y", update=update_force_inputs)
     moment_z: bpy.props.FloatProperty(name="Moment Z", update=update_force_inputs)
+    moment: bpy.props.FloatProperty(
+        name="Moment",
+        description=(
+            "A moment applied at the point, as a couple is, in the X-Z plane: counter-clockwise positive, as statics "
+            "texts take it, in force times length. It counts in moments about any point"
+        ),
+        options={"SKIP_SAVE"},  # Else the next force applied would carry the last couple entered.
+        update=update_force_inputs,
+    )
     load_name: bpy.props.StringProperty(name="Load Name")
     magnitude_locked: bpy.props.BoolProperty(
         name="Magnitude Known",
@@ -2035,7 +2059,11 @@ class StructuralForceInput(get_direction_input("the force", update_force_inputs,
             focus = {"x′": "x", "z′": "z"}.get(self.focus, self.focus)
             for prop in ("x", "y", "z"):
                 draw_with_lock(layout, self, (prop,), focus=focus, texts=texts)
-            if category in ("IfcStructuralPointConnection", "IfcStructuralCurveMember"):
+            if category == "IfcStructuralPointConnection":
+                # About Y, the moment in the X-Z plane, is entered as Moment below, in every input mode.
+                for prop in ("moment_x", "moment_z"):
+                    layout.prop(self, prop)
+            elif category == "IfcStructuralCurveMember":
                 for prop in ("moment_x", "moment_y", "moment_z"):
                     layout.prop(self, prop)
         else:
@@ -2059,6 +2087,8 @@ class StructuralForceInput(get_direction_input("the force", update_force_inputs,
             if self.has_axes:
                 xa, za = tool.Structural.to_axes(x, z, self.axes_tilt)
                 layout.label(text=f"x′ = {xa:.4f}   z′ = {za:.4f} {unit}", icon="ORIENTATION_LOCAL")
+        if category == "IfcStructuralPointConnection":
+            layout.prop(self, "moment", text=f"Moment ↺+ ({get_moment_unit_symbol()})")
         if show_name:
             layout.prop(self, "load_name")
 
@@ -2518,6 +2548,8 @@ class EditStructuralLoadValues(
         self.moment_x, self.moment_y, self.moment_z = (
             (values[a] or 0.0 for a in moment_attributes) if moment_attributes else (0.0, 0.0, 0.0)
         )
+        if category == "IfcStructuralPointConnection":
+            self.moment = tool.Structural.get_applied_moment(load)
         # IFC only stores components, so derive the in-plane inputs from them, from the nearest axis, a push's
         # from the side it arrives from...
         x, y, z = self.x, self.y, self.z
@@ -2652,8 +2684,12 @@ class EditStructuralLoadValues(
             if self.same_magnitude_as not in ("", "NONE"):
                 row.prop(self, "magnitude_ratio", text="×")
             layout.row().prop(self, "acts_as", expand=True)
-        if self.input_mode != "COMPONENTS" and (self.y or self.moment_x or self.moment_y or self.moment_z):
-            layout.label(text="Y and moments will be set to zero", icon="ERROR")
+        # A point's moment in the X-Z plane is kept in every input mode, as Moment.
+        out_of_plane = (self.moment_x, self.moment_z)
+        if category != "IfcStructuralPointConnection":
+            out_of_plane += (self.moment_y,)
+        if self.input_mode != "COMPONENTS" and (self.y or any(out_of_plane)):
+            layout.label(text="Y and moments out of the X-Z plane will be set to zero", icon="ERROR")
 
     def draw_location_inputs(self, layout: bpy.types.UILayout) -> None:
         """Where the force acts, from A, in the input modes the force is entered in"""
@@ -3532,6 +3568,8 @@ def solve_case_moment(
     forces = [np.array(overrides.get(a.id(), f), dtype=float) for a, f in zip(activities, forces)]
     locks = locks or [lock_overrides.get(a.id(), tool.Structural.get_locks(a)) for a in activities]
     links, factors = tool.Structural.get_magnitude_links(activities)
+    # Moments applied as loads are known, and the same about any point: the forces make up the rest.
+    moment -= sum(m for _, m in tool.Structural.get_case_applied_moments(case))
     solved, error = tool.Structural.solve_moment_unknown(arms, forces, locks, moment, links, factors)
     changed = {
         activity.AppliedLoad: tuple(float(c) for c in new)
@@ -3576,6 +3614,8 @@ def solve_case_place(
     at = get_case_centre_location(case)
     points = [arm + at for arm in arms]
     j = activities.index(activity)
+    # Moments applied as loads are known, and the same about any point: the forces make up the rest.
+    moment -= sum(m for _, m in tool.Structural.get_case_applied_moments(case))
     if kind in ("POINT_X", "POINT_Z", "POINT_REACH", "POINT_SWING"):
         # The force's point moves, its loads with it; A stays.
         place, error = tool.Structural.solve_force_point(points, forces, at, moment, j, kind.split("_", 1)[1])

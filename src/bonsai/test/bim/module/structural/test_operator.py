@@ -11,6 +11,7 @@ import ifcopenshell.api.root
 import ifcopenshell.api.structural
 import ifcopenshell.api.unit
 import ifcopenshell.guid
+import ifcopenshell.util.element
 import pytest
 from mathutils import Vector
 
@@ -662,3 +663,49 @@ class TestDuplicateStructuralLoadCase(NewFile):
         copy = next(c for c in ifc.by_type("IfcStructuralLoadCase") if c != load_case)
         assert copy.Name == "About A (copy)"
         assert calls == [(load_case, copy)]
+
+
+class TestDuplicatingALoadCaseKeepsTheCalculatorsState(NewFile):
+    """A load case about A with a load group, a force on B linked to twice a force on C in the group, a locked
+    resultant at B and a kept moment, duplicated to take moments about another point"""
+
+    def test_the_copy_keeps_the_calculators_state_as_its_own(self):
+        ifc = ifcopenshell.file(schema="IFC4")
+        tool.Ifc.set(ifc)
+        ifcopenshell.api.root.create_entity(ifc, ifc_class="IfcProject")
+        case = ifcopenshell.api.structural.add_structural_load_case(ifc, name="About A")
+        group = ifcopenshell.api.structural.add_structural_load_group(ifc, name="Wind")
+        ifcopenshell.api.group.assign_group(ifc, products=[group], group=case)
+        load = ifcopenshell.api.structural.add_structural_load(
+            ifc, name="100 lbf", ifc_class="IfcStructuralLoadSingleForce"
+        )
+        points = {
+            name: ifcopenshell.api.root.create_entity(ifc, ifc_class="IfcStructuralPointConnection", name=name)
+            for name in ("A", "B", "C")
+        }
+        activities = {}
+        for name, target in (("B", case), ("C", group)):
+            activity = ifcopenshell.api.structural.add_structural_activity(
+                ifc, applied_load=load, structural_member=points[name], ifc_class="IfcStructuralPointAction"
+            )
+            ifcopenshell.api.group.assign_group(ifc, products=[activity], group=target)
+            activities[name] = activity
+        tool.Structural.set_magnitude_link(activities["B"], activities["C"], 2.0)
+        tool.Structural.edit_bbim_structural(activities["B"], {"DirectionLocked": True})
+        tool.Structural.edit_bbim_structural(case, {"MomentCentre": points["A"].GlobalId, "ResultantMoment": 0.0})
+        tool.Structural.set_resultant(points["B"], case, True, False, (0.0, 0.0, -100.0))
+        tool.Structural.set_resultant_eighth(points["B"], case, "Q4")
+
+        bpy.ops.bim.duplicate_structural_load_case(load_case=case.id())
+        copy = next(c for c in ifc.by_type("IfcStructuralLoadCase") if c != case)
+        pset = ifcopenshell.util.element.get_pset(copy, "BBIM_Structural")
+        assert pset["MomentCentre"] == points["A"].GlobalId and pset["ResultantMoment"] == 0.0
+        assert tool.Structural.get_resultant(points["B"], copy) == tool.Structural.get_resultant(points["B"], case)
+        assert tool.Structural.get_resultant_eighth(points["B"], copy) == "Q4"
+        copied = tool.Structural.get_copied_activities(case, copy)
+        on_b, on_c = copied[activities["B"]], copied[activities["C"]]
+        assert ifcopenshell.util.element.get_pset(on_b, "BBIM_Structural", "DirectionLocked") is True
+        # Linked to the copy's force on C, not the original's, which stays linked as it was.
+        assert tool.Structural.get_magnitude_link(on_b) == on_c.GlobalId
+        assert tool.Structural.get_magnitude_ratio(on_b) == 2.0
+        assert tool.Structural.get_magnitude_link(activities["B"]) == activities["C"].GlobalId

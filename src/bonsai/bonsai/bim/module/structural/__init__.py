@@ -18,6 +18,7 @@
 
 import bpy
 
+import bonsai.tool as tool
 from bonsai.bim.module.geometry.operator import OverrideMoveFinish
 
 from . import operator, prop, ui, workspace
@@ -132,11 +133,15 @@ def register():
     bpy.types.Object.BIMStructuralProperties = bpy.props.PointerProperty(type=prop.BIMObjectStructuralProperties)
     # Kept moments' unknowns are written once a move is confirmed, in its undo step.
     OverrideMoveFinish.callbacks.append(operator.keep_moments_after_move)
+    # The calculator's state kept outside a load case follows it to a copy.
+    operator.DuplicateStructuralLoadCase.callbacks.append(tool.Structural.copy_calculator_state)
 
 
 def unregister():
     if operator.keep_moments_after_move in OverrideMoveFinish.callbacks:
         OverrideMoveFinish.callbacks.remove(operator.keep_moments_after_move)
+    if tool.Structural.copy_calculator_state in operator.DuplicateStructuralLoadCase.callbacks:
+        operator.DuplicateStructuralLoadCase.callbacks.remove(tool.Structural.copy_calculator_state)
     if not bpy.app.background:
         bpy.utils.unregister_tool(workspace.StructuralTool)
     del bpy.types.Scene.BIMStructuralProperties

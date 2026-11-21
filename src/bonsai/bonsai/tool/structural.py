@@ -1209,6 +1209,45 @@ class Structural(bonsai.core.tool.Structural):
         return [a for a in activities if a and is_in_group(a)]
 
     @classmethod
+    def get_copied_activities(
+        cls, load_case: ifcopenshell.entity_instance, copy: ifcopenshell.entity_instance
+    ) -> dict[ifcopenshell.entity_instance, ifcopenshell.entity_instance]:
+        """The applied loads of a copied load case, by the original's each was copied from: on the same item with
+        the same load, in the same order"""
+
+        def get_activities(group: ifcopenshell.entity_instance) -> list[ifcopenshell.entity_instance]:
+            members = [o for rel in group.IsGroupedBy for o in rel.RelatedObjects]
+            nested = [a for g in members if g.is_a("IfcStructuralLoadGroup") for a in get_activities(g)]
+            return [o for o in members if o.is_a("IfcStructuralActivity")] + nested
+
+        def key(activity: ifcopenshell.entity_instance) -> tuple:
+            items = [r.RelatingElement for r in activity.AssignedToStructuralItem]
+            return (items[0] if items else None, activity.AppliedLoad)
+
+        copies: dict[tuple, list[ifcopenshell.entity_instance]] = {}
+        for activity in get_activities(copy):
+            copies.setdefault(key(activity), []).append(activity)
+        return {a: copies[key(a)].pop(0) for a in get_activities(load_case) if copies.get(key(a))}
+
+    @classmethod
+    def copy_calculator_state(cls, load_case: ifcopenshell.entity_instance, copy: ifcopenshell.entity_instance) -> None:
+        """Carry the calculator's state kept outside a duplicated load case over to its copy: resultants locked and
+        their eighths, kept on items by load case, and magnitude links between its applied loads, which link the
+        copy's to each other rather than to the original's"""
+        for item in tool.Ifc.get().by_type("IfcStructuralItem"):
+            if resultant := cls.get_resultant(item, load_case):
+                cls.set_resultant(
+                    item, copy, resultant["MagnitudeLocked"], resultant["DirectionLocked"], resultant["Force"]
+                )
+            if eighth := cls.get_resultant_eighth(item, load_case):
+                cls.set_resultant_eighth(item, copy, eighth)
+        copied = cls.get_copied_activities(load_case, copy)
+        by_guid = {original.GlobalId: new for original, new in copied.items()}
+        for original, new in copied.items():
+            if (link := cls.get_magnitude_link(original)) and link in by_guid:
+                cls.set_magnitude_link(new, by_guid[link], cls.get_magnitude_ratio(original))
+
+    @classmethod
     def get_current_structural_analysis_model(cls) -> Union[ifcopenshell.entity_instance, None]:
         """Get the model that new structural items and load cases are assigned to.
 

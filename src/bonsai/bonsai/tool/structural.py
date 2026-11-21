@@ -1170,14 +1170,23 @@ class Structural(bonsai.core.tool.Structural):
         except RuntimeError:
             return
         load = next((a.AppliedLoad for a in cls.get_group_activities(element, group) if a.AppliedLoad), None)
-        if not load or not load.Name:
-            return  # The picker lists named loads only.
+        if load:
+            cls.set_load_picker(load)
+
+    @classmethod
+    def set_load_picker(cls, load: ifcopenshell.entity_instance) -> bool:
+        """Set the load picker to the load, returning whether it could be: it lists named loads only, of the classes
+        the selected items take. Only Blender properties change."""
+        if not load.Name:
+            return False
+        props = cls.get_structural_props()
         try:
             if props.applicable_structural_load_types != load.is_a():
                 props.applicable_structural_load_types = load.is_a()
             props.applicable_structural_loads = str(load.id())
         except TypeError:
-            pass  # Not offered for the current selection.
+            return False  # Not offered for the current selection.
+        return True
 
     @classmethod
     def get_group_activities(

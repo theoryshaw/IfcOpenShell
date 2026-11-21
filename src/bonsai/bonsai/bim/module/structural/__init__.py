@@ -24,6 +24,7 @@ from . import operator, prop, ui, workspace
 
 classes = (
     operator.PickStructuralLoads,
+    operator.PickAppliedLoad,
     operator.LoadStructuralAnalysisModels,
     operator.DisableStructuralAnalysisModelEditingUI,
     operator.AddStructuralAnalysisModel,

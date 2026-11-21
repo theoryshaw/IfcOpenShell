@@ -290,6 +290,66 @@ class PickStructuralLoads(bpy.types.Operator):
         LoadsDecorator.is_picking = False
 
 
+def pick_load_to_apply(pickable: dict) -> tuple[bool, str]:
+    """Set the load picker to the load of a shown arrow, returning whether it was set and what to report"""
+    # Arrows of one applied load only: not a resultant's, a moment's, a point's axes or a + to add a load.
+    if not pickable.get("activity") or any(
+        pickable.get(key) for key in ("activities", "moment_of", "axes_of", "add_load_to")
+    ):
+        return False, "That is not an applied load: pick a load's arrow"
+    load = tool.Ifc.get().by_id(pickable["activity"]).AppliedLoad
+    if not load:
+        return False, "That applied load has no load definition"
+    if not load.Name:
+        return False, "The picker lists named loads only: name the load first"
+    if not tool.Structural.set_load_picker(load):
+        return False, f"{load.Name} is a {load.is_a()}, which the selected items cannot take"
+    return True, f"Picked {load.Name}"
+
+
+class PickAppliedLoad(bpy.types.Operator):
+    """Pick the load to apply by clicking its arrow in the viewport, with loads shown"""
+
+    bl_idname = "bim.pick_applied_load"
+    bl_label = "Pick Load in Viewport"
+    bl_options = {"INTERNAL"}
+
+    @classmethod
+    def poll(cls, context):
+        if not LoadsDecorator.is_installed:
+            cls.poll_message_set("Show loads to pick one in the viewport")
+            return False
+        return True
+
+    def invoke(self, context, event):
+        context.window.cursor_modal_set("EYEDROPPER")
+        context.workspace.status_text_set("Click a load's arrow to apply that load. Esc or right-click to cancel")
+        context.window_manager.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event):
+        if event.type in {"ESC", "RIGHTMOUSE"} and event.value == "PRESS":
+            return self.finish(context, {"CANCELLED"})
+        if event.type != "LEFTMOUSE" or event.value != "PRESS":
+            return {"PASS_THROUGH"}  # Hovering still highlights arrows, and the view can still be navigated.
+        if not (view := PickStructuralLoads.get_view_under_mouse(self, context, event)):
+            return self.finish(context, {"CANCELLED"})  # A click outside the viewport, as with Blender's eyedropper.
+        area, region, rv3d = view
+        if not (pickable := LoadsDecorator.pick(region, rv3d, event.mouse_x - region.x, event.mouse_y - region.y)):
+            return {"RUNNING_MODAL"}  # A miss: try again.
+        is_picked, message = pick_load_to_apply(pickable)
+        self.report({"INFO"} if is_picked else {"WARNING"}, message)
+        if not is_picked:
+            return {"RUNNING_MODAL"}
+        LoadsDecorator.redraw_properties()
+        return self.finish(context, {"FINISHED"})
+
+    def finish(self, context: bpy.types.Context, result: set[str]) -> set[str]:
+        context.window.cursor_modal_restore()
+        context.workspace.status_text_set(None)
+        return result
+
+
 class AddStructuralMemberConnection(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.add_structural_member_connection"
     bl_label = "Add Structural Member Connection"

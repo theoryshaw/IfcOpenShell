@@ -698,6 +698,7 @@ class BIM_PT_structural_load_cases(Panel):
         row = box.row(align=True)
         row.prop(self.props, "applicable_structural_load_types", text="")
         row.prop(self.props, "applicable_structural_loads", text="")
+        row.operator("bim.pick_applied_load", text="", icon="EYEDROPPER")
         draw_apply_load_button(box, self.props, load_case["id"])
 
         if not load_case["load_groups"]:
@@ -718,6 +719,7 @@ class BIM_PT_structural_load_cases(Panel):
         row = layout.row(align=True)
         row.prop(self.props, "applicable_structural_load_types", text="")
         row.prop(self.props, "applicable_structural_loads", text="")
+        row.operator("bim.pick_applied_load", text="", icon="EYEDROPPER")
         draw_apply_load_button(layout, self.props, load_group["id"])
         layout.template_list(
             "BIM_UL_structural_activities",

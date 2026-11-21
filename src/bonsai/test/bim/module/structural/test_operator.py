@@ -420,6 +420,41 @@ class TestApplyingAChosenLoad(NewFile):
         tool.Structural.follow_active_item_load()
         assert props.applicable_structural_loads == str(other.id())
 
+    def test_picking_a_loads_arrow_sets_the_picker_to_its_load(self):
+        from bonsai.bim.module.structural.operator import pick_load_to_apply
+
+        ifc, case, load, objects = self.setup_points()
+        other = ifcopenshell.api.structural.add_structural_load(
+            ifc, name="Other", ifc_class="IfcStructuralLoadSingleForce"
+        )
+        activity = next(i for i in ifc.get_inverse(load) if i.is_a("IfcStructuralActivity"))
+        props = tool.Structural.get_structural_props()
+        self.select(objects, {"B"}, "B")
+        props.applicable_structural_load_types = "IfcStructuralLoadSingleForce"
+        props.applicable_structural_loads = str(other.id())
+        assert pick_load_to_apply({"activity": activity.id()}) == (True, f"Picked {load.Name}")
+        assert props.applicable_structural_loads == str(load.id())
+
+    def test_picking_what_is_not_a_load_or_cannot_be_applied_leaves_the_picker(self):
+        from bonsai.bim.module.structural.operator import pick_load_to_apply
+
+        ifc, case, load, objects = self.setup_points()
+        other = ifcopenshell.api.structural.add_structural_load(
+            ifc, name="Other", ifc_class="IfcStructuralLoadSingleForce"
+        )
+        activity = next(i for i in ifc.get_inverse(load) if i.is_a("IfcStructuralActivity"))
+        props = tool.Structural.get_structural_props()
+        self.select(objects, {"B"}, "B")
+        props.applicable_structural_load_types = "IfcStructuralLoadSingleForce"
+        props.applicable_structural_loads = str(other.id())
+        # A resultant's arrow, which stands for several loads.
+        assert not pick_load_to_apply({"activity": 0, "activities": [activity.id()]})[0]
+        # A point load, with only a curve member selected, which cannot take it.
+        self.select(objects, {"M"}, "M")
+        assert not pick_load_to_apply({"activity": activity.id()})[0]
+        self.select(objects, {"B"}, "B")
+        assert props.applicable_structural_loads == str(other.id())
+
 
 class TestKeepingMomentsAfterMoves(NewFile):
     """A kept sum of moments about A, with B's downward force to find: moving B along X changes its arm, so the

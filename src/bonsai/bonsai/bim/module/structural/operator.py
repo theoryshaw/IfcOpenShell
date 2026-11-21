@@ -2655,6 +2655,9 @@ class EditStructuralLoadValues(
                 layout.prop(self, "new_load_case_name")
         users = [i for i in tool.Ifc.get().get_inverse(load) if i.is_a("IfcStructuralActivity")]
         layout.label(text=f"Used by {len(users)} applied load{'s' if len(users) != 1 else ''}", icon="INFO")
+        if sources := {s.Name or "Unnamed" for user in users if (s := tool.Structural.get_moved_from(user))}:
+            text = f"Moved from {', '.join(sorted(sources))}: it follows those loads, so edits here are replaced"
+            layout.label(text=text, icon="ERROR")
         load_cases = {g for user in users for g in get_activity_load_groups(user)}
         if len(load_cases) > 1 and not self.get_movable_activities():
             layout.label(text=f"Used in {len(load_cases)} load cases: move one from its applied load", icon="INFO")
@@ -3039,6 +3042,99 @@ class SetStructuralMomentCentre(bpy.types.Operator, tool.Ifc.Operator):
                 self.report({"ERROR"}, "Select the point connection to take moments about")
                 return {"CANCELLED"}
         tool.Structural.set_moment_centre(group, centre)
+        redraw_loads(context)
+        return {"FINISHED"}
+
+
+# Items for Move Loads to Point's point and load case, kept referenced while its dialog is open.
+MOVE_POINT_ITEMS: list[tuple[str, str, str]] = []
+MOVE_TARGET_ITEMS: list[tuple[str, str, str]] = []
+
+
+def get_move_point_items(self: "MoveStructuralLoadsToPoint", context: bpy.types.Context) -> list:
+    MOVE_POINT_ITEMS[:] = sorted(
+        (
+            (str(p.id()), p.Name or "Unnamed", "Move the loads to this point")
+            for p in tool.Ifc.get().by_type("IfcStructuralPointConnection")
+        ),
+        key=lambda item: item[1],
+    )
+    return MOVE_POINT_ITEMS
+
+
+def get_move_target_items(self: "MoveStructuralLoadsToPoint", context: bpy.types.Context) -> list:
+    cases = [
+        (str(c.id()), c.Name or "Unnamed", "Add the moved loads to this load case")
+        for c in tool.Ifc.get().by_type("IfcStructuralLoadCase")
+        if c.id() != self.load_case
+    ]
+    MOVE_TARGET_ITEMS[:] = [("NEW", "New Load Case", "Add the moved loads to a new load case")] + sorted(
+        cases, key=lambda item: item[1]
+    )
+    return MOVE_TARGET_ITEMS
+
+
+class MoveStructuralLoadsToPoint(bpy.types.Operator, tool.Ifc.Operator):
+    bl_idname = "bim.move_structural_loads_to_point"
+    bl_label = "Move Loads to Point"
+    bl_description = (
+        "Add the load case's point loads, moved to a point, to another load case: their resultant force there, with "
+        "the couple moving them adds, as a force is resolved into a force and a couple. It keeps in step with them"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+    load_case: bpy.props.IntProperty(options={"HIDDEN", "SKIP_SAVE"})
+    point: bpy.props.EnumProperty(name="To Point", items=get_move_point_items)
+    target: bpy.props.EnumProperty(name="Into", items=get_move_target_items)
+    new_load_case_name: bpy.props.StringProperty(name="New Load Case")
+
+    def invoke(self, context, event):
+        source = tool.Ifc.get().by_id(self.load_case)
+        # The point moments are taken about, as a level's axis is in Example 2.21's, if any.
+        if (centre := tool.Structural.get_moment_centre(source)) and str(centre.id()) in [
+            item[0] for item in get_move_point_items(self, context)
+        ]:
+            self.point = str(centre.id())
+        self.new_load_case_name = f"{source.Name or 'Unnamed'} moved"
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "point")
+        layout.prop(self, "target")
+        if self.target == "NEW":
+            layout.prop(self, "new_load_case_name")
+        try:
+            source = tool.Ifc.get().by_id(self.load_case)
+            point = tool.Ifc.get().by_id(int(self.point))
+        except (RuntimeError, ValueError):
+            return
+        force, moment = tool.Structural.get_equivalent_at(source, point)
+        unit = get_load_unit_symbol("IfcStructuralPointConnection")
+        layout.label(
+            text=f"R: X = {force[0]:.2f}   Z = {force[2]:.2f} {unit},   M = {moment:+.2f} {get_moment_unit_symbol()}",
+            icon="FORCE_FORCE",
+        )
+        layout.label(text="It follows the load case's loads as they change", icon="FILE_REFRESH")
+
+    def _execute(self, context):
+        ifc_file = tool.Ifc.get()
+        source = ifc_file.by_id(self.load_case)
+        try:
+            point = ifc_file.by_id(int(self.point))
+        except (RuntimeError, ValueError):
+            self.report({"ERROR"}, "Choose the point to move the loads to")
+            return {"CANCELLED"}
+        if self.target == "NEW":
+            target = ifcopenshell.api.structural.add_structural_load_case(
+                ifc_file, name=self.new_load_case_name or f"{source.Name or 'Unnamed'} moved"
+            )
+            for model in source.LoadGroupFor:
+                ifcopenshell.api.structural.assign_structural_load_group(
+                    ifc_file, load_groups=[target], structural_analysis_model=model
+                )
+        else:
+            target = ifc_file.by_id(int(self.target))
+        tool.Structural.move_loads_to_point(source, point, target)
         redraw_loads(context)
         return {"FINISHED"}
 

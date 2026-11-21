@@ -973,3 +973,93 @@ class TestAppliedMoments(NewFile):
         assert summary.endswith(", with a couple M = -50.00 N.m (clockwise)")
         label = StructuralItemLoadsData.get_resultant_label([(0.0, 0.0, -10.0)], -50.0)
         assert "M = -50" in label and label.startswith("R = 10")
+
+
+class TestMovingLoadsToAPoint(NewFile):
+    """Example 2.21's roof: 12 down 1 left of the column's axis and 10 down 1 right of it, moved to the axis: 22
+    down with a couple of +12 - 10 = +2"""
+
+    def add_point(self, ifc, name, x, z=0.0):
+        point = ifcopenshell.api.root.create_entity(ifc, ifc_class="IfcStructuralPointConnection", name=name)
+        mesh = bpy.data.meshes.new(name)
+        mesh.from_pydata([(0.0, 0.0, 0.0)], [], [])
+        obj = bpy.data.objects.new(name, mesh)
+        obj.location = (x, 0.0, z)
+        bpy.context.scene.collection.objects.link(obj)
+        tool.Ifc.link(point, obj)
+        return point
+
+    def setup_roof(self):
+        ifc = ifcopenshell.file(schema="IFC4")
+        tool.Ifc.set(ifc)
+        ifcopenshell.api.root.create_entity(ifc, ifc_class="IfcProject")
+        model = ifcopenshell.api.structural.add_structural_analysis_model(ifc)
+        case = ifcopenshell.api.structural.add_structural_load_case(ifc, name="At Roof")
+        model.LoadedBy = [case]
+        points = {name: self.add_point(ifc, name, x, 26.0) for name, x in (("ROOF", 0.0), ("L", -1.0), ("R", 1.0))}
+        bpy.context.view_layer.update()
+        loads = {}
+        for name, value in (("L", -12.0), ("R", -10.0)):
+            load = ifcopenshell.api.structural.add_structural_load(
+                ifc, name=f"{value} kip", ifc_class="IfcStructuralLoadSingleForce"
+            )
+            load.ForceZ = value
+            activity = ifcopenshell.api.structural.add_structural_activity(
+                ifc, applied_load=load, structural_member=points[name], ifc_class="IfcStructuralPointAction"
+            )
+            ifcopenshell.api.group.assign_group(ifc, products=[activity], group=case)
+            loads[name] = load
+        return ifc, model, case, points, loads
+
+    def get_moved(self, ifc, source):
+        target = next(c for c in ifc.by_type("IfcStructuralLoadCase") if c != source)
+        (activity,) = [o for r in target.IsGroupedBy for o in r.RelatedObjects]
+        return target, activity
+
+    def test_moving_loads_to_a_point_makes_a_force_and_a_couple(self):
+        ifc, model, case, points, _ = self.setup_roof()
+        bpy.ops.bim.move_structural_loads_to_point(
+            load_case=case.id(), point=str(points["ROOF"].id()), target="NEW", new_load_case_name="On the column axis"
+        )
+        target, activity = self.get_moved(ifc, case)
+        assert target.Name == "On the column axis" and target in model.LoadedBy
+        assert activity.AssignedToStructuralItem[0].RelatingElement == points["ROOF"]
+        assert tool.Structural.get_force(activity.AppliedLoad) == pytest.approx((0.0, 0.0, -22.0))
+        assert tool.Structural.get_applied_moment(activity.AppliedLoad) == pytest.approx(2.0)
+        assert tool.Structural.get_moved_from(activity) == case
+
+    def test_a_moved_load_follows_its_loads_after_any_ifc_operator(self):
+        ifc, model, case, points, loads = self.setup_roof()
+        bpy.ops.bim.move_structural_loads_to_point(load_case=case.id(), point=str(points["ROOF"].id()), target="NEW")
+        _, activity = self.get_moved(ifc, case)
+        loads["L"].ForceZ = -16.0  # As any edit might, then an IFC operator ends.
+        bpy.ops.bim.set_structural_moment_centre(load_case=case.id(), point=str(points["ROOF"].id()))
+        assert tool.Structural.get_force(activity.AppliedLoad) == pytest.approx((0.0, 0.0, -26.0))
+        assert tool.Structural.get_applied_moment(activity.AppliedLoad) == pytest.approx(6.0)
+
+    def test_a_moved_load_removed_is_forgotten(self):
+        ifc, model, case, points, _ = self.setup_roof()
+        bpy.ops.bim.move_structural_loads_to_point(load_case=case.id(), point=str(points["ROOF"].id()), target="NEW")
+        target, activity = self.get_moved(ifc, case)
+        ifcopenshell.api.structural.remove_structural_activity(ifc, activity=activity)
+        tool.Structural.refresh_moved_loads()
+        assert tool.Structural.get_moved_loads(target) == []
+
+    def test_moving_more_loads_into_the_same_load_case(self):
+        ifc, model, case, points, _ = self.setup_roof()
+        floor = ifcopenshell.api.structural.add_structural_load_case(ifc, name="On the column axis")
+        bpy.ops.bim.move_structural_loads_to_point(
+            load_case=case.id(), point=str(points["ROOF"].id()), target=str(floor.id())
+        )
+        bpy.ops.bim.move_structural_loads_to_point(
+            load_case=case.id(), point=str(points["L"].id()), target=str(floor.id())
+        )
+        assert len(tool.Structural.get_moved_loads(floor)) == 2
+        # About L itself: 10 down 2 to its right, clockwise.
+        at_l = next(
+            a
+            for r in floor.IsGroupedBy
+            for a in r.RelatedObjects
+            if a.AssignedToStructuralItem[0].RelatingElement == points["L"]
+        )
+        assert tool.Structural.get_applied_moment(at_l.AppliedLoad) == pytest.approx(-20.0)

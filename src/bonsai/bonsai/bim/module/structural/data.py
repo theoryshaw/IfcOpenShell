@@ -276,7 +276,12 @@ class StructuralItemLoadsData:
                     {
                         "activity": activity.id(),
                         "order": tool.Structural.get_draw_order_key(activity),
-                        "name": (load.Name if load else None) or "Unnamed",
+                        "name": ((load.Name if load else None) or "Unnamed")
+                        + (
+                            f"  ⟵ {source.Name or 'Unnamed'}"
+                            if (source := tool.Structural.get_moved_from(activity))
+                            else ""
+                        ),
                         "group": (subgroup.Name or "Unnamed") if subgroup else None,
                         "is_force": is_force,
                     }

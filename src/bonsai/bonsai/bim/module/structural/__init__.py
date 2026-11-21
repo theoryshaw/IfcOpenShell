@@ -19,6 +19,7 @@
 import bpy
 
 import bonsai.tool as tool
+from bonsai.bim.ifc import IfcStore
 from bonsai.bim.module.geometry.operator import OverrideMoveFinish
 
 from . import operator, prop, ui, workspace
@@ -57,6 +58,7 @@ classes = (
     operator.UnassignStructuralLoadCase,
     operator.EditStructuralLoadCase,
     operator.DuplicateStructuralLoadCase,
+    operator.MoveStructuralLoadsToPoint,
     operator.RemoveStructuralLoadCase,
     operator.SetSelfWeightDownwards,
     operator.AddStructuralLoadGroup,
@@ -136,6 +138,8 @@ def register():
     OverrideMoveFinish.callbacks.append(operator.keep_moments_after_move)
     # The calculator's state kept outside a load case follows it to a copy.
     operator.DuplicateStructuralLoadCase.callbacks.append(tool.Structural.copy_calculator_state)
+    # Loads moved to a point follow the loads they were moved from, whatever changed them.
+    IfcStore.pre_commit_callbacks.append(tool.Structural.refresh_moved_loads)
 
 
 def unregister():
@@ -143,6 +147,8 @@ def unregister():
         OverrideMoveFinish.callbacks.remove(operator.keep_moments_after_move)
     if tool.Structural.copy_calculator_state in operator.DuplicateStructuralLoadCase.callbacks:
         operator.DuplicateStructuralLoadCase.callbacks.remove(tool.Structural.copy_calculator_state)
+    if tool.Structural.refresh_moved_loads in IfcStore.pre_commit_callbacks:
+        IfcStore.pre_commit_callbacks.remove(tool.Structural.refresh_moved_loads)
     if not bpy.app.background:
         bpy.utils.unregister_tool(workspace.StructuralTool)
     del bpy.types.Scene.BIMStructuralProperties

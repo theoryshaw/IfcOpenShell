@@ -80,6 +80,9 @@ class IfcStore:
     library_file: Optional[ifcopenshell.file] = None
     current_transaction = ""
     last_transaction = ""
+    # Called with no arguments at the end of each top-level IFC operator, before its changes are committed, so that
+    # what they make is undone with it.
+    pre_commit_callbacks: list[Callable[[], None]] = []
     history: list[TransactionStep] = []
     future: list[TransactionStep] = []
     schema_identifiers = ["IFC4", "IFC2X3", "IFC4X3_ADD2"]
@@ -430,6 +433,12 @@ class IfcStore:
         def end_top_level_operator() -> None:
             if is_top_level_operator:
                 if tool.Ifc.get():
+                    # What other modules derive from the IFC, kept in step with it, in this operator's undo step.
+                    for callback in IfcStore.pre_commit_callbacks:
+                        try:
+                            callback()
+                        except Exception:
+                            traceback.print_exc()
                     tool.Ifc.get().end_transaction()
                     IfcStore.add_transaction_operation(
                         operator,

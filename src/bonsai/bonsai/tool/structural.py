@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, Union
 import bpy
 import ifcopenshell
 import ifcopenshell.api.context
+import ifcopenshell.api.group
 import ifcopenshell.api.pset
 import ifcopenshell.api.structural
 import ifcopenshell.util.attribute
@@ -1118,6 +1119,124 @@ class Structural(bonsai.core.tool.Structural):
         if not (moment_y := attributes["MomentY"]):
             return 0.0
         return -moment_y * cls.get_torque_scale()
+
+    @classmethod
+    def get_equivalent_at(
+        cls, case: ifcopenshell.entity_instance, point: ifcopenshell.entity_instance
+    ) -> tuple[np.ndarray, float]:
+        """A load case's point loads moved to a point: their resultant force, in Blender's axes, and the couple
+        that moving them there adds to the moments applied with them, their sum of moments about it, counter-
+        clockwise positive, in force times length, as a force is resolved into a force and a couple"""
+        force = np.zeros(3)
+        for item in cls.get_point_items(case):
+            for activity in cls.get_chain_activities(item, case):
+                if (load := activity.AppliedLoad) and load.is_a("IfcStructuralLoadSingleForce"):
+                    force += np.array(cls.get_force(load))
+        return force, cls.get_moment_about(case, point) or 0.0
+
+    @classmethod
+    def get_moved_loads(cls, case: ifcopenshell.entity_instance) -> list[dict[str, str]]:
+        """The loads moved into a load case from others, kept in step with them: each as its applied load's and
+        its source load case's GlobalIds, Activity and From"""
+        value = ifcopenshell.util.element.get_pset(case, "BBIM_Structural", "MovedLoads")
+        try:
+            entries = json.loads(value) if value else []
+        except ValueError:
+            return []
+        return [e for e in entries if isinstance(e, dict) and e.get("Activity") and e.get("From")]
+
+    @classmethod
+    def set_moved_loads(cls, case: ifcopenshell.entity_instance, entries: list[dict[str, str]]) -> None:
+        cls.edit_bbim_structural(case, {"MovedLoads": json.dumps(entries) if entries else None})
+
+    @classmethod
+    def get_moved_from(cls, activity: ifcopenshell.entity_instance) -> Union[ifcopenshell.entity_instance, None]:
+        """The load case an applied load was moved from, if it is one kept in step with it"""
+        for case in tool.Ifc.get().by_type("IfcStructuralLoadGroup"):
+            for entry in cls.get_moved_loads(case):
+                if entry["Activity"] == activity.GlobalId:
+                    try:
+                        return tool.Ifc.get().by_guid(entry["From"])
+                    except RuntimeError:
+                        return None
+        return None
+
+    @classmethod
+    def move_loads_to_point(
+        cls,
+        source: ifcopenshell.entity_instance,
+        point: ifcopenshell.entity_instance,
+        target: ifcopenshell.entity_instance,
+    ) -> ifcopenshell.entity_instance:
+        """Add to a load case the equivalent at a point of another's point loads, a force and a couple, as one
+        applied load kept in step with them, and return it"""
+        ifc_file = tool.Ifc.get()
+        load = ifcopenshell.api.structural.add_structural_load(
+            ifc_file,
+            name=f"{source.Name or 'Unnamed'} at {point.Name or 'Unnamed'}",
+            ifc_class="IfcStructuralLoadSingleForce",
+        )
+        activity = ifcopenshell.api.structural.add_structural_activity(
+            ifc_file, ifc_class="IfcStructuralPointAction", applied_load=load, structural_member=point
+        )
+        ifcopenshell.api.group.assign_group(ifc_file, products=[activity], group=target)
+        cls.set_moved_loads(
+            target, cls.get_moved_loads(target) + [{"Activity": activity.GlobalId, "From": source.GlobalId}]
+        )
+        cls.write_moved_load(activity, source)
+        return activity
+
+    @classmethod
+    def write_moved_load(cls, activity: ifcopenshell.entity_instance, source: ifcopenshell.entity_instance) -> bool:
+        """Write a moved load's force and couple from its source load case's loads, if they changed, returning
+        whether they did"""
+        connects = activity.AssignedToStructuralItem
+        if not connects or not (load := activity.AppliedLoad) or not load.is_a("IfcStructuralLoadSingleForce"):
+            return False
+        force, moment = cls.get_equivalent_at(source, connects[0].RelatingElement)
+        attributes = {a: float(v) or None for a, v in zip(("ForceX", "ForceY", "ForceZ"), force)}
+        attributes |= {"MomentX": None, "MomentY": -moment / cls.get_torque_scale() or None, "MomentZ": None}
+        attributes = cls.to_model_axes(load, attributes)
+        current = [getattr(load, a) or 0.0 for a in attributes]
+        if np.allclose(current, [v or 0.0 for v in attributes.values()]):
+            return False
+        ifcopenshell.api.structural.edit_structural_load(tool.Ifc.get(), structural_load=load, attributes=attributes)
+        return True
+
+    @classmethod
+    def refresh_moved_loads(cls) -> None:
+        """Keep every moved load in step with the loads it was moved from: run at the end of each IFC operator, as
+        anything may have changed them. Moved loads whose applied load has gone are forgotten; one whose source has
+        gone keeps its last values"""
+        ifc_file = tool.Ifc.get()
+        if not ifc_file or not hasattr(ifc_file, "schema") or ifc_file.schema == "IFC2X3":
+            return
+        cases = [
+            (case, entries)
+            for case in ifc_file.by_type("IfcStructuralLoadGroup")
+            if (entries := cls.get_moved_loads(case))
+        ]
+        # Loads moved from loads moved from others settle in as many passes as the chain is long.
+        for _ in range(5):
+            changed = False
+            for case, entries in cases:
+                kept = []
+                for entry in entries:
+                    try:
+                        activity = ifc_file.by_guid(entry["Activity"])
+                    except RuntimeError:
+                        continue
+                    kept.append(entry)
+                    try:
+                        source = ifc_file.by_guid(entry["From"])
+                    except RuntimeError:
+                        continue
+                    changed |= cls.write_moved_load(activity, source)
+                if len(kept) != len(entries):
+                    cls.set_moved_loads(case, kept)
+                    entries[:] = kept
+            if not changed:
+                break
 
     @classmethod
     def get_case_applied_moments(

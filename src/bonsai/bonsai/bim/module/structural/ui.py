@@ -630,6 +630,7 @@ class BIM_PT_structural_load_cases(Panel):
         )
         op.load_case = load_case["id"]
         row.operator("bim.duplicate_structural_load_case", text="", icon="DUPLICATE").load_case = load_case["id"]
+        row.operator("bim.move_structural_loads_to_point", text="", icon="PIVOT_CURSOR").load_case = load_case["id"]
 
         if self.props.active_load_case_id and self.props.active_load_case_id == load_case["id"]:
             row.operator("bim.edit_structural_load_case", text="", icon="CHECKMARK")

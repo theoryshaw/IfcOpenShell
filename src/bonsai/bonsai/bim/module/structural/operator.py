@@ -350,6 +350,58 @@ class PickAppliedLoad(bpy.types.Operator):
         return result
 
 
+def pick_point_connection(
+    region: bpy.types.Region, rv3d: bpy.types.RegionView3D, x: float, y: float, within: float = 15.0
+) -> Union[ifcopenshell.entity_instance, None]:
+    """The visible structural point connection whose vertex is drawn nearest the region coordinates x and y, if one
+    is within a few pixels"""
+    best, best_distance = None, within
+    for point in tool.Ifc.get().by_type("IfcStructuralPointConnection"):
+        obj = tool.Ifc.get_object(point)
+        if not obj or obj.type != "MESH" or not obj.data.vertices or not obj.visible_get():
+            continue
+        at = location_3d_to_region_2d(region, rv3d, obj.matrix_world @ obj.data.vertices[0].co)
+        if at is not None and (distance := (at - Vector((x, y))).length) < best_distance:
+            best, best_distance = point, distance
+    return best
+
+
+class PickStructuralMomentCentre(bpy.types.Operator):
+    """Pick the point to take the load case's moments about by clicking it in the viewport"""
+
+    bl_idname = "bim.pick_structural_moment_centre"
+    bl_label = "Pick Point in Viewport"
+    bl_options = {"INTERNAL"}
+    load_case: bpy.props.IntProperty(options={"HIDDEN", "SKIP_SAVE"})
+
+    def invoke(self, context, event):
+        context.window.cursor_modal_set("EYEDROPPER")
+        context.workspace.status_text_set("Click the point to take moments about. Esc or right-click to cancel")
+        context.window_manager.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event):
+        if event.type in {"ESC", "RIGHTMOUSE"} and event.value == "PRESS":
+            return self.finish(context, {"CANCELLED"})
+        if event.type != "LEFTMOUSE" or event.value != "PRESS":
+            return {"PASS_THROUGH"}  # The view can still be navigated.
+        if not (view := PickStructuralLoads.get_view_under_mouse(self, context, event)):
+            return self.finish(context, {"CANCELLED"})  # A click outside the viewport, as with Blender's eyedropper.
+        area, region, rv3d = view
+        if not (point := pick_point_connection(region, rv3d, event.mouse_x - region.x, event.mouse_y - region.y)):
+            return {"RUNNING_MODAL"}  # A miss: try again.
+        # Through the operator, for the change to be one undo step.
+        bpy.ops.bim.set_structural_moment_centre(load_case=self.load_case, point=str(point.id()))
+        self.report({"INFO"}, f"Moments about {point.Name or 'the point'}")
+        LoadsDecorator.redraw_properties()
+        return self.finish(context, {"FINISHED"})
+
+    def finish(self, context: bpy.types.Context, result: set[str]) -> set[str]:
+        context.window.cursor_modal_restore()
+        context.workspace.status_text_set(None)
+        return result
+
+
 class AddStructuralMemberConnection(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.add_structural_member_connection"
     bl_label = "Add Structural Member Connection"
@@ -2887,6 +2939,22 @@ class EditStructuralResultant(bpy.types.Operator, tool.Ifc.Operator, StructuralF
         return tool.Structural.get_resultant(item, load_case) if item else None
 
 
+# Items for the point Take Moments About takes them about, kept referenced while its menu is open.
+MOMENT_CENTRE_ITEMS: list[tuple[str, str, str]] = []
+
+
+def get_moment_centre_items(self: "SetStructuralMomentCentre", context: bpy.types.Context) -> list:
+    points = [
+        (str(p.id()), p.Name or "Unnamed", "Take moments about this point")
+        for p in tool.Ifc.get().by_type("IfcStructuralPointConnection")
+    ]
+    MOMENT_CENTRE_ITEMS[:] = [
+        ("ACTIVE", "Selected Point", "Take moments about the active point connection"),
+        ("NONE", "None", "Stop taking moments about a point"),
+    ] + sorted(points, key=lambda item: item[1])
+    return MOMENT_CENTRE_ITEMS
+
+
 class SetStructuralMomentCentre(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.set_structural_moment_centre"
     bl_label = "Take Moments About Selected Point"
@@ -2896,6 +2964,14 @@ class SetStructuralMomentCentre(bpy.types.Operator, tool.Ifc.Operator):
     )
     bl_options = {"REGISTER", "UNDO"}
     clear: bpy.props.BoolProperty(name="Clear", default=False, options={"SKIP_SAVE"})
+    # The load case, or else the one shown.
+    load_case: bpy.props.IntProperty(options={"HIDDEN", "SKIP_SAVE"})
+    point: bpy.props.EnumProperty(
+        name="Point",
+        description="The point to take moments about",
+        items=get_moment_centre_items,
+        options={"SKIP_SAVE"},  # Else the eyedropper would take the point last chosen from the menu.
+    )
 
     @classmethod
     def description(cls, context, properties):
@@ -2904,12 +2980,14 @@ class SetStructuralMomentCentre(bpy.types.Operator, tool.Ifc.Operator):
     def _execute(self, context):
         props = tool.Structural.get_structural_props()
         try:
-            group = tool.Ifc.get().by_id(int(props.load_group_to_show))
+            group = tool.Ifc.get().by_id(self.load_case or int(props.load_group_to_show))
         except (ValueError, RuntimeError):
             self.report({"ERROR"}, "Choose a load case to show first")
             return {"CANCELLED"}
         centre = None
-        if not self.clear:
+        if self.point not in ("ACTIVE", "NONE"):
+            centre = tool.Ifc.get().by_id(int(self.point))
+        elif self.point == "ACTIVE" and not self.clear:
             centre = tool.Ifc.get_entity(context.active_object) if context.active_object else None
             if not centre or not centre.is_a("IfcStructuralPointConnection"):
                 self.report({"ERROR"}, "Select the point connection to take moments about")

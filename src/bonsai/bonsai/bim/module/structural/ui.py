@@ -645,8 +645,21 @@ class BIM_PT_structural_load_cases(Panel):
 
         if self.props.active_load_case_id == load_case["id"]:
             self.draw_editable_load_case_ui()
+            self.draw_load_case_moment_centre_ui(load_case)
             self.draw_load_case_models_ui(load_case)
             self.draw_editable_load_case_group_ui(load_case)
+
+    def draw_load_case_moment_centre_ui(self, load_case):
+        """The point the load case's moments are taken about, chosen from a menu, set at once"""
+        try:
+            centre = tool.Structural.get_moment_centre(tool.Ifc.get().by_id(load_case["id"]))
+        except RuntimeError:
+            centre = None
+        row = self.layout.row(align=True)
+        row.label(text="Moments About", icon="FORCE_VORTEX")
+        text = ((centre.Name or "").strip() or "A") if centre else "None"
+        row.operator_menu_enum("bim.set_structural_moment_centre", "point", text=text).load_case = load_case["id"]
+        row.operator("bim.pick_structural_moment_centre", text="", icon="EYEDROPPER").load_case = load_case["id"]
 
     def draw_load_case_models_ui(self, load_case):
         box = self.layout.box()

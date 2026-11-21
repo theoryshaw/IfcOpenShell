@@ -803,3 +803,60 @@ class TestDuplicatingALoadCaseKeepsTheCalculatorsState(NewFile):
         assert tool.Structural.get_magnitude_link(on_b) == on_c.GlobalId
         assert tool.Structural.get_magnitude_ratio(on_b) == 2.0
         assert tool.Structural.get_magnitude_link(activities["B"]) == activities["C"].GlobalId
+
+
+class TestChoosingTheMomentCentreOfALoadCase(NewFile):
+    """Choosing the point a load case's moments are taken about from the load case being edited, not only the one
+    shown"""
+
+    def setup_case(self):
+        ifc = ifcopenshell.file(schema="IFC4")
+        tool.Ifc.set(ifc)
+        ifcopenshell.api.root.create_entity(ifc, ifc_class="IfcProject")
+        case = ifcopenshell.api.structural.add_structural_load_case(ifc, name="About B")
+        points = {
+            name: ifcopenshell.api.root.create_entity(ifc, ifc_class="IfcStructuralPointConnection", name=name)
+            for name in ("A", "B")
+        }
+        return ifc, case, points
+
+    def test_choosing_a_point_for_a_load_case(self):
+        ifc, case, points = self.setup_case()
+        bpy.ops.bim.set_structural_moment_centre(load_case=case.id(), point=str(points["B"].id()))
+        assert tool.Structural.get_moment_centre(case) == points["B"]
+
+    def test_choosing_none(self):
+        ifc, case, points = self.setup_case()
+        tool.Structural.set_moment_centre(case, points["A"])
+        bpy.ops.bim.set_structural_moment_centre(load_case=case.id(), point="NONE")
+        assert tool.Structural.get_moment_centre(case) is None
+
+    def test_the_selected_point_by_default(self):
+        ifc, case, points = self.setup_case()
+        obj = bpy.data.objects.new("A", None)
+        bpy.context.scene.collection.objects.link(obj)
+        tool.Ifc.link(points["A"], obj)
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.bim.set_structural_moment_centre(load_case=case.id())
+        assert tool.Structural.get_moment_centre(case) == points["A"]
+
+    def test_picking_the_point_nearest_the_click(self):
+        from bonsai.bim.module.structural import operator as structural_operator
+
+        ifc, case, points = self.setup_case()
+        for name, x in (("A", 0.0), ("B", 1.0)):
+            mesh = bpy.data.meshes.new(name)
+            mesh.from_pydata([(0.0, 0.0, 0.0)], [], [])
+            obj = bpy.data.objects.new(name, mesh)
+            obj.location = (x, 0.0, 0.0)
+            bpy.context.scene.collection.objects.link(obj)
+            tool.Ifc.link(points[name], obj)
+        bpy.context.view_layer.update()
+
+        # A view drawing X at 100 pixels a metre.
+        def project(region, rv3d, co):
+            return Vector((co.x * 100.0, co.z * 100.0))
+
+        with mock.patch.object(structural_operator, "location_3d_to_region_2d", project):
+            assert structural_operator.pick_point_connection(None, None, 95.0, 6.0) == points["B"]
+            assert structural_operator.pick_point_connection(None, None, 50.0, 0.0) is None  # A miss.

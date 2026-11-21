@@ -141,11 +141,13 @@ class ShaderInfo:
     # Whether applied loads push, as Edit Load has them while it previews their loads, by applied load id.
     preview_push: dict[int, bool] = {}
 
-    def __init__(self, load_group: Union[ifcopenshell.entity_instance, None] = None) -> None:
+    def __init__(self, load_group: Union[ifcopenshell.entity_instance, None] = None, also_shown: bool = False) -> None:
         """
         :param load_group: The load group to draw, rather than the one chosen to show, as for a report.
+        :param also_shown: Drawn in the viewport with the active load case shown: its loads only, without moments.
         """
         self.load_group = load_group
+        self.also_shown = also_shown
         self.is_empty = True
         self.shader = DecorationShader()
         self.curve_members: dict[str, MemberInfo] = {}
@@ -175,7 +177,8 @@ class ShaderInfo:
         self.surface_members = {}
         self.get_force_units()
         self.get_structural_elements_and_activities()
-        self.moment_force_scale = self.get_moment_force_scale()
+        # A load case shown with the active one draws its loads alone: its moments are the active one's to draw.
+        self.moment_force_scale = None if self.also_shown else self.get_moment_force_scale()
         # While moments are taken about a point, the viewport numbers forces as their moments are, across the load
         # case; a report's points number their own, as their equations do.
         self.moment_numbers = (
@@ -186,7 +189,8 @@ class ShaderInfo:
         self.get_linear_loads()
         self.get_point_loads()
         self.get_planar_loads()
-        self.get_moments()
+        if not self.also_shown:
+            self.get_moments()
         self.tag_new_entries(None)
         if len(self.info):
             self.is_empty = False

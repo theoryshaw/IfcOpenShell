@@ -56,6 +56,67 @@ class TestLoadStructuralLoads(NewFile):
         assert sorted(load.name for load in props.structural_loads) == ["Unused", "Used"]
 
 
+class TestShowingSeveralLoadCases(NewFile):
+    """Eyes show several load cases at once, one of them active, whose moments are drawn"""
+
+    def setup_cases(self):
+        ifc = ifcopenshell.file(schema="IFC4")
+        tool.Ifc.set(ifc)
+        model = ifcopenshell.api.structural.add_structural_analysis_model(ifc)
+        cases = [ifcopenshell.api.structural.add_structural_load_case(ifc, name=n) for n in ("A", "B", "C")]
+        model.LoadedBy = cases
+        LoadGroupDecorationData.is_loaded = False
+        props = tool.Structural.get_structural_props()
+        props.activity_type = "Action"
+        props.show_loads = False
+        tool.Structural.set_also_shown_ids([])
+        return cases, props
+
+    def click(self, case, mode="CLICK"):
+        bpy.ops.bim.show_structural_load_case(load_case=case.id(), mode=mode)
+
+    def state(self, props):
+        active = props.load_group_to_show if props.show_loads else None
+        return active, tool.Structural.get_also_shown_ids() if props.show_loads else []
+
+    def test_clicking_eyes_shows_several_with_the_last_active(self):
+        (a, b, c), props = self.setup_cases()
+        self.click(a)
+        assert self.state(props) == (str(a.id()), [])
+        self.click(b)  # Shown with A, as the active one.
+        assert self.state(props) == (str(b.id()), [a.id()])
+        self.click(a)  # Shown already: made active again.
+        assert self.state(props) == (str(a.id()), [b.id()])
+        self.click(a)  # The active one hidden: B takes its place.
+        assert self.state(props) == (str(b.id()), [])
+
+    def test_shift_shows_or_hides_without_changing_the_active_one(self):
+        (a, b, c), props = self.setup_cases()
+        self.click(a)
+        self.click(b, "TOGGLE")
+        self.click(c, "TOGGLE")
+        assert self.state(props) == (str(a.id()), [b.id(), c.id()])
+        self.click(b, "TOGGLE")
+        assert self.state(props) == (str(a.id()), [c.id()])
+
+    def test_ctrl_shows_only_one_and_hide_all_hides_all(self):
+        (a, b, c), props = self.setup_cases()
+        self.click(a)
+        self.click(b)
+        self.click(c, "ONLY")
+        assert self.state(props) == (str(c.id()), [])
+        self.click(a, "TOGGLE")
+        bpy.ops.bim.hide_structural_load_cases()
+        assert not props.show_loads and tool.Structural.get_also_shown_ids() == []
+
+    def test_a_removed_load_case_is_no_longer_shown(self):
+        (a, b, c), props = self.setup_cases()
+        self.click(a)
+        self.click(b, "TOGGLE")
+        ifcopenshell.api.structural.remove_structural_load_case(tool.Ifc.get(), load_case=b)
+        assert tool.Structural.get_also_shown_load_groups() == []
+
+
 class TestShowStructuralLoadCase(NewFile):
     def test_showing_and_hiding_a_load_case(self):
         ifc = ifcopenshell.file(schema="IFC4")
@@ -452,6 +513,18 @@ class TestApplyingAChosenLoad(NewFile):
         props.applicable_structural_load_types = "IfcStructuralLoadSingleForce"
         props.applicable_structural_loads = str(other.id())
         assert pick_load_to_apply({"activity": activity.id()}) == (True, f"Picked {load.Name}")
+        assert props.applicable_structural_loads == str(load.id())
+
+    def test_picking_a_load_with_nothing_selected(self):
+        # A load can be picked first, and where it goes chosen after.
+        from bonsai.bim.module.structural.operator import pick_load_to_apply
+
+        ifc, case, load, objects = self.setup_points()
+        activity = next(i for i in ifc.get_inverse(load) if i.is_a("IfcStructuralActivity"))
+        for obj in bpy.context.scene.objects:
+            obj.select_set(False)
+        assert pick_load_to_apply({"activity": activity.id()})[0]
+        props = tool.Structural.get_structural_props()
         assert props.applicable_structural_loads == str(load.id())
 
     def test_picking_what_is_not_a_load_or_cannot_be_applied_leaves_the_picker(self):

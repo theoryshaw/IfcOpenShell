@@ -1121,6 +1121,33 @@ class Structural(bonsai.core.tool.Structural):
         return -moment_y * cls.get_torque_scale()
 
     @classmethod
+    def get_also_shown_ids(cls) -> list[int]:
+        """The ids of the load cases shown with the active one, their loads only, in the order they were shown"""
+        props = cls.get_structural_props()
+        ids = []
+        for part in props.also_shown_load_groups.split(","):
+            if part.strip().isdigit() and (i := int(part)) not in ids and str(i) != props.load_group_to_show:
+                ids.append(i)
+        return ids
+
+    @classmethod
+    def get_also_shown_load_groups(cls) -> list[ifcopenshell.entity_instance]:
+        """The load cases shown with the active one, leaving out any since removed"""
+        groups = []
+        for i in cls.get_also_shown_ids():
+            try:
+                group = tool.Ifc.get().by_id(i)
+            except RuntimeError:
+                continue
+            if group.is_a("IfcStructuralLoadGroup"):
+                groups.append(group)
+        return groups
+
+    @classmethod
+    def set_also_shown_ids(cls, ids: list[int]) -> None:
+        cls.get_structural_props().also_shown_load_groups = ",".join(str(i) for i in ids)
+
+    @classmethod
     def get_equivalent_at(
         cls, case: ifcopenshell.entity_instance, point: ifcopenshell.entity_instance
     ) -> tuple[np.ndarray, float]:

@@ -274,6 +274,9 @@ class BIMStructuralProperties(PropertyGroup):
         update=update_activity_type,
     )
     load_group_to_show: EnumProperty(items=get_load_groups_to_show, name="Load Case", update=update_loads_display)
+    # The other load cases shown with it, their loads only, by id, comma-separated: the one above is the active one,
+    # whose moments are drawn and which the tools that work on one load case use.
+    also_shown_load_groups: StringProperty(name="Also Shown", update=update_loads_display)
     force_display: EnumProperty(
         items=[
             ("BOTH", "Both", "Show the resultant of point forces with their components"),
@@ -425,6 +428,7 @@ class BIMStructuralProperties(PropertyGroup):
         reference_frame: str
         activity_type: str
         load_group_to_show: str
+        also_shown_load_groups: str
         force_display: str
         force_scale: float
         show_force_angles: bool

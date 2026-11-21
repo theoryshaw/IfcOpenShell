@@ -4480,22 +4480,68 @@ class ShowStructuralLoadCase(bpy.types.Operator):
     bl_idname = "bim.show_structural_load_case"
     bl_label = "Show Load Case"
     bl_description = (
-        "Show the loads of this load case or combination in the viewport, or stop showing them if they are shown"
+        "Show this load case's loads with those shown, as the active one, whose moments are drawn; make it the "
+        "active one if shown; or hide it if it is.\n"
+        "Shift: show or hide it, leaving the active one. Ctrl: show only it"
     )
     bl_options = {"REGISTER"}
     load_case: bpy.props.IntProperty()
+    mode: bpy.props.EnumProperty(
+        items=[("CLICK", "Click", ""), ("TOGGLE", "Toggle", ""), ("ONLY", "Only", "")],
+        default="CLICK",
+        options={"SKIP_SAVE"},
+    )
+
+    def invoke(self, context, event):
+        self.mode = "ONLY" if event.ctrl else "TOGGLE" if event.shift else "CLICK"
+        return self.execute(context)
 
     def execute(self, context):
         props = tool.Structural.get_structural_props()
-        if props.show_loads and props.load_group_to_show == str(self.load_case):
-            props.show_loads = False
+        case = str(self.load_case)
+        active = props.load_group_to_show if props.show_loads else ""
+        others = tool.Structural.get_also_shown_ids() if props.show_loads else []
+        shown = case == active or self.load_case in others
+        if self.mode == "ONLY" or not active:
+            return self.show(props, case, [])
+        if case == active:
+            # The active one hidden: the one shown first after it takes its place, or none is shown.
+            if not others:
+                props.show_loads = False
+                return {"FINISHED"}
+            return self.show(props, str(others[0]), others[1:])
+        if self.mode == "TOGGLE":
+            if shown:
+                others.remove(self.load_case)
+            else:
+                others.append(self.load_case)
+            tool.Structural.set_also_shown_ids(others)
             return {"FINISHED"}
+        # Shown or not, it becomes the active one, the active one staying shown with it.
+        others = [i for i in others if i != self.load_case]
+        return self.show(props, case, [int(active)] + others)
+
+    def show(self, props, active: str, others: list[int]) -> set[str]:
         try:
-            props.load_group_to_show = str(self.load_case)
+            props.load_group_to_show = active
         except TypeError:
             self.report({"WARNING"}, "This load case or combination is not in the current analysis model.")
             return {"CANCELLED"}
+        tool.Structural.set_also_shown_ids(others)
         props.show_loads = True
+        return {"FINISHED"}
+
+
+class HideStructuralLoadCases(bpy.types.Operator):
+    bl_idname = "bim.hide_structural_load_cases"
+    bl_label = "Hide All Load Cases"
+    bl_description = "Stop showing the loads of every load case"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        props = tool.Structural.get_structural_props()
+        tool.Structural.set_also_shown_ids([])
+        props.show_loads = False
         return {"FINISHED"}
 
 

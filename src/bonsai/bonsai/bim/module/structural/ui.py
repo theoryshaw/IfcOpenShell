@@ -294,10 +294,21 @@ def draw_chain_reverse_button(layout: bpy.types.UILayout, chain: list[int], item
 
 
 def get_load_case_eye(load_case: int) -> str:
-    """An open eye for the load case whose loads are shown, closed for the others"""
+    """An open eye for the load cases whose loads are shown, closed for the others"""
     props = tool.Structural.get_structural_props()
-    shown = props.show_loads and props.load_group_to_show == str(load_case)
+    shown = props.show_loads and (
+        props.load_group_to_show == str(load_case) or load_case in tool.Structural.get_also_shown_ids()
+    )
     return "HIDE_OFF" if shown else "HIDE_ON"
+
+
+def is_active_load_case(load_case: int) -> bool:
+    """Whether the load case is the active one shown, whose moments are drawn, its eye drawn pressed, when others are
+    shown with it"""
+    props = tool.Structural.get_structural_props()
+    return bool(
+        props.show_loads and props.load_group_to_show == str(load_case) and tool.Structural.get_also_shown_ids()
+    )
 
 
 class BIM_PT_structural_item_models(Panel):
@@ -378,7 +389,11 @@ class BIM_PT_structural_item_loads(Panel):
             draw_chain_reverse_button(row, chain, tool.Ifc.get_entity(context.active_object).id(), load_case["id"])
             if load_case["id"]:
                 row.operator(
-                    "bim.show_structural_load_case", text="", icon=get_load_case_eye(load_case["id"]), emboss=False
+                    "bim.show_structural_load_case",
+                    text="",
+                    icon=get_load_case_eye(load_case["id"]),
+                    emboss=is_active_load_case(load_case["id"]),
+                    depress=is_active_load_case(load_case["id"]),
                 ).load_case = load_case["id"]
             for i, load in enumerate(load_case["loads"]):
                 row = box.row(align=True)
@@ -402,7 +417,11 @@ class BIM_PT_structural_item_loads(Panel):
                     "id"
                 ]
                 row.operator(
-                    "bim.show_structural_load_case", text="", icon=get_load_case_eye(moment["id"]), emboss=False
+                    "bim.show_structural_load_case",
+                    text="",
+                    icon=get_load_case_eye(moment["id"]),
+                    emboss=is_active_load_case(moment["id"]),
+                    depress=is_active_load_case(moment["id"]),
                 ).load_case = moment["id"]
 
 
@@ -612,8 +631,10 @@ class BIM_PT_structural_load_cases(Panel):
 
         self.props = tool.Structural.get_structural_props()
 
-        row = self.layout.row()
+        row = self.layout.row(align=True)
         row.operator("bim.add_structural_load_case", icon="ADD")
+        if self.props.show_loads:
+            row.operator("bim.hide_structural_load_cases", text="", icon="HIDE_ON")
 
         for load_case in StructuralLoadCasesData.data["load_cases"]:
             self.draw_load_case_ui(load_case)
@@ -626,7 +647,11 @@ class BIM_PT_structural_load_cases(Panel):
             label_text += f" (SW: {sw[0]:g}, {sw[1]:g}, {sw[2]:g})"
         row.label(text=label_text, icon="CON_CLAMPTO")
         op = row.operator(
-            "bim.show_structural_load_case", text="", icon=get_load_case_eye(load_case["id"]), emboss=False
+            "bim.show_structural_load_case",
+            text="",
+            icon=get_load_case_eye(load_case["id"]),
+            emboss=is_active_load_case(load_case["id"]),
+            depress=is_active_load_case(load_case["id"]),
         )
         op.load_case = load_case["id"]
         row.operator("bim.duplicate_structural_load_case", text="", icon="DUPLICATE").load_case = load_case["id"]
@@ -781,7 +806,11 @@ class BIM_PT_structural_load_combinations(Panel):
         # An empty combination has nothing to add up, and analysis programs refuse it.
         row.label(text=text, icon="ERROR" if not combination["total_load_cases"] else "MOD_ARRAY")
         op = row.operator(
-            "bim.show_structural_load_case", text="", icon=get_load_case_eye(combination["id"]), emboss=False
+            "bim.show_structural_load_case",
+            text="",
+            icon=get_load_case_eye(combination["id"]),
+            emboss=is_active_load_case(combination["id"]),
+            depress=is_active_load_case(combination["id"]),
         )
         op.load_case = combination["id"]
 

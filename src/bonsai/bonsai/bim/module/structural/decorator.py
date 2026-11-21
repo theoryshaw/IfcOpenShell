@@ -23,6 +23,7 @@ from typing import Union
 import blf
 import bpy
 import gpu
+import ifcopenshell
 import numpy as np
 from bpy.types import SpaceView3D
 from bpy_extras.view3d_utils import location_3d_to_region_2d
@@ -159,11 +160,38 @@ class LoadsDecorator(tool.Blender.ViewportDecorator):
     @classmethod
     def update(cls) -> None:
         cls.decoration_data.update()
-        cls.text_info = cls.decoration_data.text_info
-        cls.shader_info = cls.decoration_data.info
-        cls.pickables = cls.decoration_data.pickables
+        cls.text_info = list(cls.decoration_data.text_info)
+        cls.shader_info = list(cls.decoration_data.info)
+        cls.pickables = list(cls.decoration_data.pickables)
+        # The other load cases shown, each drawn on its own, as its points' forces chain and add up within it, then
+        # added: their loads only. Their values name their load case, as the active one's then do.
+        others = tool.Structural.get_also_shown_load_groups()
+        if others:
+            props = tool.Structural.get_structural_props()
+            try:
+                active = tool.Ifc.get().by_id(int(props.load_group_to_show))
+            except (ValueError, RuntimeError):
+                active = None
+            if active is not None:
+                cls.name_load_case(cls.text_info, active)
+            for group in others:
+                drawing = ShaderInfo(group, also_shown=True)
+                drawing.update()
+                offset = len(cls.shader_info)
+                cls.shader_info += drawing.info
+                cls.text_info += cls.name_load_case(list(drawing.text_info), group)
+                cls.pickables += [dict(p, info=p["info"] + offset) for p in drawing.pickables]
         cls.label_boxes = {}  # Until the labels are drawn again.
         cls.hovered = None
+
+    @staticmethod
+    def name_load_case(text_info: list[dict], group: ifcopenshell.entity_instance) -> list[dict]:
+        """Put a load case's name before its forces' values, telling them apart from another's shown with it"""
+        for text in text_info:
+            if text.get("force_of") and not text.get("named_case"):
+                text["text"] = f"{group.Name or 'Unnamed'}: {text['text']}"
+                text["named_case"] = True
+        return text_info
 
     @classmethod
     def is_visible(cls, info: dict) -> bool:

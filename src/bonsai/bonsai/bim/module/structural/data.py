@@ -493,6 +493,11 @@ class StructuralLoadCasesData:
             element = tool.Ifc.get_entity(obj)
             if element:
                 element_classes.add(element.is_a())
+        loadable = ("IfcStructuralPointConnection", "IfcStructuralCurveMember", "IfcStructuralSurfaceMember")
+        if not element_classes & set(loadable):
+            # Nothing to apply to is selected yet: every kind is offered, so that a load can be chosen, or picked
+            # from its arrow, before choosing where it goes.
+            element_classes |= set(loadable)
         types = [("IfcStructuralLoadTemperature", "IfcStructuralLoadTemperature", "")]
         if "IfcStructuralPointConnection" in element_classes:
             types.extend(

@@ -642,3 +642,23 @@ class TestPlacingAPoint(NewFile):
         )
         at = c_obj.matrix_world @ c_obj.data.vertices[0].co
         assert (at.x, at.z) == pytest.approx((2.0, 1.25))
+
+
+class TestDuplicateStructuralLoadCase(NewFile):
+    def test_duplicating_a_load_case_and_telling_the_callbacks(self):
+        from bonsai.bim.module.structural.operator import DuplicateStructuralLoadCase
+
+        ifc = ifcopenshell.file(schema="IFC4")
+        tool.Ifc.set(ifc)
+        ifcopenshell.api.root.create_entity(ifc, ifc_class="IfcProject")
+        load_case = ifcopenshell.api.structural.add_structural_load_case(ifc, name="About A")
+        calls = []
+        callback = lambda original, copy: calls.append((original, copy))
+        DuplicateStructuralLoadCase.callbacks.append(callback)
+        try:
+            bpy.ops.bim.duplicate_structural_load_case(load_case=load_case.id())
+        finally:
+            DuplicateStructuralLoadCase.callbacks.remove(callback)
+        copy = next(c for c in ifc.by_type("IfcStructuralLoadCase") if c != load_case)
+        assert copy.Name == "About A (copy)"
+        assert calls == [(load_case, copy)]

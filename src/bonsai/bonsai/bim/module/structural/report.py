@@ -587,11 +587,18 @@ def get_resultant_calculation(
         forces, text_unit, unit, found if solving else None, resultant_found, resultant_eighth
     )
     # Moments applied at the point too, as couples are: with them the resultant is a force and a couple there.
+    length_unit = ifcopenshell.util.unit.get_project_unit(tool.Ifc.get(), "LENGTHUNIT")
+    length = ifcopenshell.util.unit.get_unit_symbol(length_unit) if length_unit else "m"
     if couple := sum(tool.Structural.get_applied_moment(activity.AppliedLoad) for activity in activities):
-        length_unit = ifcopenshell.util.unit.get_project_unit(tool.Ifc.get(), "LENGTHUNIT")
-        length = ifcopenshell.util.unit.get_unit_symbol(length_unit) if length_unit else "m"
         sense = "counter-clockwise" if couple > 0 else "clockwise"
         summary += f", with a couple M = {couple:+.2f} {unit}.{length} ({sense})"
+    # Each listed with the forces, as the diagram draws it, in the green of a moment about Y, turning as it does.
+    applied = [(a, m) for a in activities if (m := tool.Structural.get_applied_moment(a.AppliedLoad))]
+    for k, (activity, moment) in enumerate(applied, 1):
+        name = get_marked_name(activity.AppliedLoad.Name or "Unnamed", activity.id(), marks)
+        sense = "counter-clockwise" if moment > 0 else "clockwise"
+        rows.append(get_table_row(f"M_{{{k}}}", name, abs(moment), sense, [], get_svg_color((0, 1, 0, 1))))
+        rows[-1]["magnitude"] += f" {unit}.{length}"
     # The resultant too. What of it was found follows from how many force values were: two unknowns in all.
     total = [sum(force["vector"][k] for force in forces) for k in range(3)]
     # Rounding noise across an axis would put a resultant along it into the neighbouring eighth.

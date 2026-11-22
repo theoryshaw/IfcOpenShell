@@ -1183,9 +1183,14 @@ class TestAppliedMoments(NewFile):
         from bonsai.bim.module.structural.report import get_resultant_calculation
 
         _, _, _, _, activity = self.setup_case()
-        summary = get_resultant_calculation([activity], "N")["summary"]
+        calculation = get_resultant_calculation([activity], "N")
+        summary = calculation["summary"]
         assert summary.startswith("R = 10.00 N")
         assert summary.endswith(", with a couple M = -50.00 N.m (clockwise)")
+        # Listed with the force, before the resultant, as the diagram draws it.
+        assert [row["symbol"] for row in calculation["forces"]] == ["F_{1}", "M_{1}", "R"]
+        couple = calculation["forces"][1]
+        assert couple["magnitude"] == "50.00 N.m" and couple["direction"] == "clockwise"
         label = StructuralItemLoadsData.get_resultant_label([(0.0, 0.0, -10.0)], -50.0)
         assert "M = -50" in label and label.startswith("R = 10")
 

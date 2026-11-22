@@ -961,6 +961,7 @@ class BIM_PT_show_structural_activities(Panel):
         row.prop(self.props, "show_force_angles")
         row.prop(self.props, "show_force_slopes")
         self.layout.prop(self.props, "show_axes_components")
+        self.layout.prop(self.props, "moment_detail")
         if self.props.show_force_angles or self.props.show_force_slopes:
             row = self.layout.row(align=True)
             row.prop(self.props, "angle_reference")

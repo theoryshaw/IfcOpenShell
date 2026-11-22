@@ -31,7 +31,12 @@ from gpu_extras.batch import batch_for_shader
 from mathutils import Vector
 
 import bonsai.tool as tool
-from bonsai.bim.module.structural.load_decoration_data import ShaderInfo, box_crosses_segments, get_plain_symbol
+from bonsai.bim.module.structural.load_decoration_data import (
+    MOMENT_DETAIL,
+    ShaderInfo,
+    box_crosses_segments,
+    get_plain_symbol,
+)
 
 # Structural items moved by other means than IFC Move, such as the gizmo or typed values, whose kept moments solve,
 # where they are now, to unknowns other than those written: Keep Moments writes them. By id.
@@ -244,7 +249,15 @@ class LoadsDecorator(tool.Blender.ViewportDecorator):
     @classmethod
     def is_visible(cls, info: dict) -> bool:
         """Whether drawing data is shown: loads hide with their structural item, in the viewport being drawn, and
-        what belongs to several items, as a moment to its point and its centre, with any of them"""
+        what belongs to several items, as a moment to its point and its centre, with any of them. Moment detail
+        beyond Moment Detail is shown only with its force hovered."""
+        if (level := info.get("detail")) and level > MOMENT_DETAIL[
+            tool.Structural.get_structural_props().moment_detail
+        ]:
+            hovered = cls.hovered or {}
+            activities = {hovered.get("activity"), hovered.get("moment_activity"), *hovered.get("activities", ())}
+            if not activities & set(info.get("detail_of", ())) - {None, 0}:
+                return False
         space = bpy.context.space_data
         for name in info.get("visible_with") or [info.get("object")]:
             if name and (obj := bpy.data.objects.get(name)):

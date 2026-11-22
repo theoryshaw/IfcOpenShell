@@ -376,6 +376,22 @@ class BIMStructuralProperties(PropertyGroup):
         default=False,
         update=update_loads_display,
     )
+    moment_detail: EnumProperty(
+        items=[
+            ("MINIMAL", "Minimal", "Each force's moment and their sum only"),
+            ("ARMS", "Arms", "Also each force's line of action and moment arm, as statics texts draw them"),
+            (
+                "FULL",
+                "Full",
+                "Also the triangle that finds an inclined force's arm: r from the centre to its point, s along its "
+                "line of action, their angles, and the run and rise of r",
+            ),
+        ],
+        name="Moment Detail",
+        description="How much of how each moment is found is drawn. Hovering a force shows all of its own",
+        default="ARMS",
+        update=update_loads_display,
+    )
     angle_reference: EnumProperty(
         items=[
             (
@@ -455,6 +471,7 @@ class BIMStructuralProperties(PropertyGroup):
         show_force_angles: bool
         show_force_slopes: bool
         show_axes_components: bool
+        moment_detail: str
         report_detailed_steps: bool
         angle_reference: str
         force_decimals: int

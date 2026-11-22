@@ -36,6 +36,11 @@ import bonsai.tool as tool
 from bonsai.bim.module.structural.shader import ARROW_HEAD_FLARE, DecorationShader
 
 
+# How much of how each moment is found is drawn, by Moment Detail: an entry of the moment drawing marked with a
+# higher "detail" than the one chosen is left out, unless its force, in its "detail_of", is hovered.
+MOMENT_DETAIL = {"MINIMAL": 0, "ARMS": 1, "FULL": 2}
+
+
 class MemberInfo(TypedDict):
     member: ifcopenshell.entity_instance
     activities: list[tuple[ifcopenshell.entity_instance, float]]
@@ -202,6 +207,11 @@ class ShaderInfo:
         self.get_planar_loads()
         if not self.also_shown:
             self.get_moments()
+            if self.load_group is not None:
+                # A report's diagram draws what the viewport does before anything is hovered.
+                level = MOMENT_DETAIL[tool.Structural.get_structural_props().moment_detail]
+                self.info = [e for e in self.info if e.get("detail", 0) <= level]
+                self.text_info = [t for t in self.text_info if t.get("detail", 0) <= level]
         self.tag_new_entries(None)
         if len(self.info):
             self.is_empty = False
@@ -695,6 +705,13 @@ class ShaderInfo:
         starts = []  # Where each force's drawing starts, to hide it with its point.
         kind, unknown_activity = tool.Structural.get_moment_centre_unknown(group)
         found_focus = {"ARM": ("arm",), "REACH": ("distance",), "SWING": ("phi", "alpha", "angle")}.get(kind, ())
+        self.detail_level = MOMENT_DETAIL[props.moment_detail]
+        # The forces at each point: r, from the centre to it, is the same for all of them, so drawn once, with the
+        # first, and shown with any of them hovered.
+        at_point: dict[int, list[int]] = {}
+        for point, activity, _, _ in forces:
+            at_point.setdefault(point.id(), []).append(activity)
+        r_drawn: set[int] = set()
         for i, (point, activity, location, force) in enumerate(forces, 1):
             starts.append((len(self.info), len(self.text_info), point, activity))
             moment, arm, foot = tool.Structural.get_moment(at, location, force)
@@ -705,12 +722,13 @@ class ShaderInfo:
             symbol = get_plain_symbol(f"M_{{{i}}}")
             along = np.array((force[0], 0.0, force[2]))
             if not np.linalg.norm(along) or arm * length_scale < 1e-9 * max(reach, 1e-9):
-                text = f"{symbol} = 0: its line of action passes through A"
+                text = f"{symbol} = 0"  # Its line of action passes through the centre.
                 self.text_info.append(
                     {"position": location, "text": text, "color": color, "away": np.array((0, 0, 1.0))}
                 )
                 continue
             along /= np.linalg.norm(along)
+            arms_from = (len(self.info), len(self.text_info))
             # Its line of action, on to the foot of its arm, then the arm, square to it, from the centre.
             if np.linalg.norm(foot - location) > 1e-9 * reach:
                 self.add_dashed_line(location, foot, size, color)
@@ -722,10 +740,13 @@ class ShaderInfo:
                 a, b = foot + towards * corner, foot + side * corner
                 self.add_dashed_line(a, a + side * corner, size, color, dashed=False)
                 self.add_dashed_line(b, b + towards * corner, size, color, dashed=False)
+            self.tag_detail(arms_from, "ARMS", [activity])
             if props.show_force_slopes:
                 # The arm's slope, out by its foot, clear of r's by A; A brought to the arm's own X-Z plane, as
                 # Blender's single precision can leave it a hair off it, which would show no slope.
+                full_from = (len(self.info), len(self.text_info))
                 self.add_force_slope(np.array((at[0], foot[1], at[2])), foot, size, color)
+                self.tag_detail(full_from, "FULL", [activity])
             # A level force's arm is its Δz, a plumb one's its Δx, which then stands for it; a line of action square
             # to r leaves no triangle, r being the arm.
             arm_axis = "z" if abs(along[2]) < 1e-6 else "x" if abs(along[0]) < 1e-6 else None
@@ -744,6 +765,8 @@ class ShaderInfo:
                         "color": color,
                         "away": away,
                         "focus": "arm",
+                        "detail": MOMENT_DETAIL["ARMS"],
+                        "detail_of": [activity],
                     }
                 )
             self.text_info.append(
@@ -756,18 +779,29 @@ class ShaderInfo:
                     "moment_of_force": activity,
                 }
             )
-            self.add_moment_triangle(i, at, location, foot, size, color, length_scale, flat)
+            # A level or plumb force's arm is its Δz or Δx, which needs no triangle to find.
+            if not arm_axis:
+                full_from = (len(self.info), len(self.text_info))
+                draw_r = point.id() not in r_drawn
+                r_drawn.add(point.id())
+                self.add_moment_triangle(i, at, location, foot, size, color, length_scale, flat, draw_r)
+                self.tag_detail(full_from, "FULL", [activity])
+                for entry in self.info[full_from[0] :] + self.text_info[full_from[1] :]:
+                    if entry.get("r_of_point"):
+                        entry["detail_of"] = at_point[point.id()]
             # Last, so that they clear all of it and the force's own diagram at its point.
             point_obj = tool.Ifc.get_object(point)
             drawn = self.get_drawn_points(starts[-1][0], starts[-1][1], point_obj.name if point_obj else None)
             at_end = len(forces) > 1  # Dimensions from A lie over each other, so each is named at its own end.
-            self.add_moment_dimensions(i, at, location, size, color, length_scale, drawn, arm_axis, at_end)
+            self.add_moment_dimensions(i, at, location, size, color, length_scale, drawn, arm_axis, at_end, activity)
             if props.show_axes_components and props.reference_frame == "GLOBAL_COORDS":
                 rotation = self.get_point_connection_rotation(point)
                 if not np.allclose(rotation, np.eye(3)):
                     # Clear of Δx and Δz too, now drawn.
                     drawn = self.get_drawn_points(starts[-1][0], starts[-1][1], point_obj.name if point_obj else None)
+                    full_from = (len(self.info), len(self.text_info))
                     self.add_axes_moment_dimensions(i, at, location, size, color, length_scale, rotation, drawn, at_end)
+                    self.tag_detail(full_from, "FULL", [activity])
         # Moments applied as loads, as couples are, the same about any point: each numbered after the forces' and
         # labelled at its point, and in the sum.
         couples_from = len(self.text_info)
@@ -890,6 +924,7 @@ class ShaderInfo:
         color: tuple,
         length_scale: float,
         flat: bool = False,
+        draw_r: bool = True,
     ) -> None:
         """Complete the right triangle a force's moment arm makes, as a text draws it to find the arm: r, from the
         centre to the force's point, labelled with its length, with its direction and slope from the point if
@@ -897,27 +932,33 @@ class ShaderInfo:
         d = r sin phi, and the angle alpha at the centre.
 
         :param flat: Whether the line of action is square to r, which is then the arm, drawn and named as it.
+        :param draw_r: Whether to draw r itself, with its length, direction and slope, which another force at the
+            same point has drawn otherwise. Its drawing is marked "r_of_point".
         """
         r = location - at
         if not np.linalg.norm(r) or flat:
             return  # Flat, r is the arm, drawn and named as it, and phi is the arm's corner.
-        self.add_dashed_line(at, location, size, color)
-        if tool.Structural.get_structural_props().show_force_slopes:
+        r_from = (len(self.info), len(self.text_info))
+        if draw_r:
+            self.add_dashed_line(at, location, size, color)
+        if draw_r and tool.Structural.get_structural_props().show_force_slopes:
             # Its slope, from the point to A, as Edit Moment Centre enters it, as a force's slope is shown; A brought
             # to the point's X-Z plane, as Blender's single precision can leave it a hair off it, which shows none.
             self.add_force_slope(location, np.array((at[0], location[1], at[2])), size, color)
         across = np.array((-r[2], 0.0, r[0])) / np.linalg.norm(r)
         if np.dot(foot - at, across) > 0:
             across = -across  # Labelled outside the triangle.
-        self.text_info.append(
-            {
-                "position": (at + location) / 2,
-                "text": f"{get_plain_symbol(f'r_{{{i}}}')} = {np.linalg.norm(r) / length_scale:.2f} {self.length_unit}",
-                "color": color,
-                "away": across,
-                "focus": "distance",
-            }
-        )
+        if draw_r:
+            self.text_info.append(
+                {
+                    "position": (at + location) / 2,
+                    "text": f"{get_plain_symbol(f'r_{{{i}}}')} = {np.linalg.norm(r) / length_scale:.2f} "
+                    f"{self.length_unit}",
+                    "color": color,
+                    "away": across,
+                    "focus": "distance",
+                }
+            )
         along = foot - location
         if np.linalg.norm(along) > 1e-9 * np.linalg.norm(r):
             # The triangle's third side, along the line of action from the force's point to the arm's foot,
@@ -933,13 +974,16 @@ class ShaderInfo:
                     "focus": "s",  # Clicked, Edit Moment Centre opens with it ready to type.
                 }
             )
-        if tool.Structural.get_structural_props().show_force_angles:
+        if draw_r and tool.Structural.get_structural_props().show_force_angles:
             # r's direction from the point, as Edit Moment Centre enters it, measured as a force's angle is.
-            first_text, reference_axes = len(self.text_info), {}
+            angle_text, reference_axes = len(self.text_info), {}
             self.add_force_angle(location, np.array((-r[0], 0.0, -r[2])), size, color, {}, reference_axes)
             self.add_reference_axes(reference_axes, size)
-            for text in self.text_info[first_text:]:
+            for text in self.text_info[angle_text:]:
                 text["text"] = text["text"].replace("θ =", f"{get_plain_symbol(f'r_{{{i}}}')} at", 1)
+        for entry in self.info[r_from[0] :] + self.text_info[r_from[1] :]:
+            if entry.get("focus") != "s":
+                entry["r_of_point"] = True
         # The triangle's other two angles: phi at the point, between r and the line of action, and alpha at the
         # centre, between r and the arm, 90 degrees less phi.
         if np.linalg.norm(foot - location) < 1e-9 * np.linalg.norm(r):
@@ -947,15 +991,28 @@ class ShaderInfo:
         self.add_angle_between(location, at, foot, size, color, get_plain_symbol(f"φ_{{{i}}}"), "phi")
         self.add_angle_between(at, location, foot, size, color, get_plain_symbol(f"α_{{{i}}}"), "alpha")
 
+    def tag_detail(self, start: tuple[int, int], level: str, activities: list[int]) -> None:
+        """Mark the moment drawing added since start, (info, text_info), as drawn from a Moment Detail level up, or
+        with one of the activities' forces hovered, unless already marked"""
+        for entry in self.info[start[0] :] + self.text_info[start[1] :]:
+            if "detail" not in entry:
+                entry["detail"], entry["detail_of"] = MOMENT_DETAIL[level], activities
+
     def get_drawn_points(self, first: int, first_text: int, obj_name: Union[str, None]) -> list[np.ndarray]:
         """The ends of the lines and arrows, and the labels' anchors, drawn from first on, and those of an object's
-        own drawing, as a point's force diagram, which dimensions are to keep clear of"""
+        own drawing, as a point's force diagram, which dimensions are to keep clear of: only what Moment Detail
+        draws, as what it leaves out is only shown with its force hovered"""
         points = []
+        level = getattr(self, "detail_level", MOMENT_DETAIL["FULL"])
         for index, entry in enumerate(self.info):
+            if entry.get("detail", 0) > level:
+                continue
             if index >= first or (obj_name and entry.get("object") == obj_name):
                 primitive = entry.get("primitive") or {}
                 points += [np.array(primitive[k]) for k in ("start", "end", "tail", "tip") if k in primitive]
         for index, text in enumerate(self.text_info):
+            if text.get("detail", 0) > level:
+                continue
             if index >= first_text or (obj_name and text.get("object") == obj_name):
                 points.append(np.array(text["position"]))
         return points
@@ -971,6 +1028,7 @@ class ShaderInfo:
         drawn: Union[list[np.ndarray], None] = None,
         arm_axis: Union[str, None] = None,
         at_end: bool = False,
+        activity: int = 0,
     ) -> None:
         """Dimension r's run and rise, Δx and Δz from A to where the force acts, as a text's figure gives them: a
         horizontal dimension above all that is drawn and a vertical one beside it, with extension lines and ticks.
@@ -980,6 +1038,8 @@ class ShaderInfo:
             is, named as the arm too.
         :param at_end: Name each at its end by the force's point, rather than its middle, as several forces'
             dimensions from A lie over each other.
+        :param activity: The force's applied load: its dimensions are marked as drawn from Moment Detail's Arms up,
+            the arm's, or Full, the other, or with it hovered.
         """
         clear = 0.3 * size  # Beyond what is drawn, with room for the labels anchored at its edge.
         tick = 0.03 * size
@@ -996,6 +1056,7 @@ class ShaderInfo:
             delta = end - start
             if abs(delta) < 1e-9 * max(size, 1e-9):
                 continue  # Level, or plumb: nothing to dimension.
+            start_at = (len(self.info), len(self.text_info))
             if k == 0:
                 a, b = np.array((start, y, line_at)), np.array((end, y, line_at))
                 extensions = ((np.array((at[0], y, at[2])), a), (np.array((location[0], y, location[2])), b))
@@ -1024,6 +1085,7 @@ class ShaderInfo:
                     "focus": focus,
                 }
             )
+            self.tag_detail(start_at, "ARMS" if axis == arm_axis else "FULL", [activity])
 
     def add_axes_moment_dimensions(
         self,

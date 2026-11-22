@@ -163,3 +163,36 @@ class TestMomentDetail(NewFile):
             assert LoadsDecorator.is_visible({"detail": 1, "detail_of": [self.activities["F2"]]})
         finally:
             LoadsDecorator.hovered = None
+
+
+class TestAppliedMomentArcInReports(NewFile):
+    def test_a_couple_at_a_point_gets_an_arc_turning_its_way_in_reports_only(self):
+        ifc = ifcopenshell.file(schema="IFC4")
+        tool.Ifc.set(ifc)
+        ifcopenshell.api.root.create_entity(ifc, ifc_class="IfcProject")
+        point = ifcopenshell.api.root.create_entity(ifc, ifc_class="IfcStructuralPointConnection", name="A")
+        mesh = bpy.data.meshes.new("A")
+        mesh.from_pydata([(0.0, 0.0, 0.0)], [], [])
+        obj = bpy.data.objects.new("A", mesh)
+        bpy.context.scene.collection.objects.link(obj)
+        tool.Ifc.link(point, obj)
+        bpy.context.view_layer.update()
+        case = ifcopenshell.api.structural.add_structural_load_case(ifc, name="Force and couple")
+        load = ifcopenshell.api.structural.add_structural_load(ifc, name="F", ifc_class="IfcStructuralLoadSingleForce")
+        # 90 down with a clockwise couple, as statics texts see the X-Z plane: IFC's MomentY turns Z to X.
+        ifcopenshell.api.structural.edit_structural_load(
+            ifc, structural_load=load, attributes={"ForceZ": -90.0, "MomentY": 27.45}
+        )
+        activity = ifcopenshell.api.structural.add_structural_activity(
+            ifc, applied_load=load, structural_member=point, ifc_class="IfcStructuralPointAction"
+        )
+        ifcopenshell.api.group.assign_group(ifc, products=[activity], group=case)
+        with mock.patch.object(DecorationShader, "new", return_value=None):
+            drawing = ShaderInfo(case)
+            drawing.update()
+        arc = [e for e in drawing.info if e.get("report_only")]
+        assert arc and all(e.get("object") == "A" for e in arc)
+        (head,) = [e["primitive"] for e in arc if e["primitive"]["type"] == "ARROW"]
+        # Turning clockwise from below right, it ends above right, at 45 degrees.
+        assert head["tip"][0] > 0 and head["tip"][2] > 0
+        assert not LoadsDecorator.is_visible(arc[0])

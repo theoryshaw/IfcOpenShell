@@ -251,6 +251,8 @@ class LoadsDecorator(tool.Blender.ViewportDecorator):
         """Whether drawing data is shown: loads hide with their structural item, in the viewport being drawn, and
         what belongs to several items, as a moment to its point and its centre, with any of them. Moment detail
         beyond Moment Detail is shown only with its force hovered."""
+        if info.get("report_only"):
+            return False  # As a moment's arc at a point, which the viewport draws with its own symbol.
         if (level := info.get("detail")) and level > MOMENT_DETAIL[
             tool.Structural.get_structural_props().moment_detail
         ]:

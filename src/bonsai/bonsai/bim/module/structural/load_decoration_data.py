@@ -584,7 +584,10 @@ class ShaderInfo:
                 rotation, slope = self.preview_axes.get(conn.id(), (None, None))
                 if rotation is None:
                     rotation, slope = self.get_point_connection_rotation(conn), tool.Structural.get_axes_slope(conn)
+                forces_from = len(self.info)
                 self.get_point_force_args(activity_list, conn_location, rotation, slope)
+                # The point's diagram size, its longest arrow, which a moment's arc in a report is sized to.
+                sizes = [p["size"] for e in self.info[forces_from:] if (p := e.get("primitive")) and "size" in p]
                 # Moments keep their own symbol; forces are drawn above.
                 loads = self.get_point_loads_values(activity_list, rotation)
                 # A couple a moved load brings names where it came from, as its force does.
@@ -597,7 +600,7 @@ class ShaderInfo:
                     }
                 )
                 suffix = f" ← {', '.join(sources)}" if sources else ""
-                self.get_point_moment_args(loads[3:], conn_location, rotation, suffix)
+                self.get_point_moment_args(loads[3:], conn_location, rotation, suffix, max(sizes, default=1.0))
 
     def get_load_marks(self) -> dict[int, tuple[Union[str, None], Union[str, None]]]:
         """For each point load, by its applied load's id, the load case it was moved from and its shared tag, if
@@ -2207,9 +2210,17 @@ class ShaderInfo:
         )
 
     def get_point_moment_args(
-        self, moments: Iterable, location: np.ndarray, rotation: np.ndarray, suffix: str = ""
+        self,
+        moments: Iterable,
+        location: np.ndarray,
+        rotation: np.ndarray,
+        suffix: str = "",
+        size: float = 1.0,
     ) -> None:
-        """get the args to the point shader for the X, Y and Z moments at a point, their labels ending in suffix"""
+        """get the args to the point shader for the X, Y and Z moments at a point, their labels ending in suffix.
+
+        A moment about Y, turning in the X-Z plane a report draws, also gets a curved arrow there, sized to size, the
+        point's diagram's, as the moment centre's is: drawn in reports only, the viewport having its own symbol."""
         location = np.array(location)
         directions: list[tuple[npt.NDArray, npt.NDArray]] = [
             (np.array((0, 1, 0)), np.array((0, 0, 1))),
@@ -2220,7 +2231,7 @@ class ShaderInfo:
             directions = [(rotation @ a, rotation @ b) for a, b in directions]
         colors = [(1, 0, 0, 1), (0, 1, 0, 1), (0, 0, 1, 1)]
 
-        for moment, (direction, d2), color in zip(moments, directions, colors):
+        for axis, (moment, (direction, d2), color) in enumerate(zip(moments, directions, colors)):
             if moment == 0:
                 continue
             d1 = -(direction * moment)
@@ -2236,6 +2247,8 @@ class ShaderInfo:
                     "uniforms": [["color", color]],
                 }
             )
+            if axis == 1:  # About Y.
+                self.add_report_moment_arc(location, direction, d2, moment, size, color)
             decimals = tool.Structural.get_structural_props().force_decimals
             self.text_info.append(
                 {
@@ -2244,6 +2257,22 @@ class ShaderInfo:
                     "color": color,
                 }
             )
+
+    def add_report_moment_arc(
+        self, location: np.ndarray, e1: np.ndarray, e2: np.ndarray, moment_y: float, size: float, color: tuple
+    ) -> None:
+        """A curved arrow round a point in the plane of e1 and e2, X and Z, turning the way a moment about Y does,
+        drawn in reports only: IFC's MomentY turns from Z to X, clockwise as statics texts see the X-Z plane"""
+        first = len(self.info)
+        radius, sweep = 0.25 * size, (-1 if moment_y > 0 else 1) * np.radians(270)
+        angles = np.radians(-45) + np.linspace(0, sweep, 28)
+        arc = [location + radius * (np.cos(a) * e1 + np.sin(a) * e2) for a in angles]
+        for a, b in zip(arc[:-2], arc[1:-1]):
+            self.add_dashed_line(a, b, size, color, dashed=False)
+        self.add_force_arrow(arc[-3], arc[-1], color, "", size)
+        self.text_info.pop()  # Its head only; the moment's label is its own.
+        for entry in self.info[first:]:
+            entry["report_only"] = True
 
     def get_point_loads_values(
         self, activity_list: list[tuple[ifcopenshell.entity_instance, float]], element_rotation_matrix: np.ndarray

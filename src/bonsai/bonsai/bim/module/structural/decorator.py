@@ -159,6 +159,11 @@ class LoadsDecorator(tool.Blender.ViewportDecorator):
 
     @classmethod
     def update(cls) -> None:
+        if solo := tool.Structural.get_solo_load():
+            cls.update_solo(solo)
+            cls.label_boxes = {}
+            cls.hovered = None
+            return
         cls.decoration_data.update()
         cls.text_info = list(cls.decoration_data.text_info)
         cls.shader_info = list(cls.decoration_data.info)
@@ -183,6 +188,49 @@ class LoadsDecorator(tool.Blender.ViewportDecorator):
                 cls.pickables += [dict(p, info=p["info"] + offset) for p in drawing.pickables]
         cls.label_boxes = {}  # Until the labels are drawn again.
         cls.hovered = None
+
+    @classmethod
+    def update_solo(cls, load: ifcopenshell.entity_instance) -> None:
+        """Draw a soloed load definition alone wherever it is applied: its arrows and values only, without moments.
+        A use on an item another load case has the load on as well is drawn once, its value naming every load case
+        it is in."""
+        cls.shader_info, cls.text_info, cls.pickables = [], [], []
+        drawn_by: dict[str, list[str]] = {}  # Each item's object drawn, with the load cases it stands for.
+        for case in tool.Structural.get_load_load_cases(load):
+            drawing = ShaderInfo(case, also_shown=True, only_load=load)
+            drawing.update()
+            objects = {e.get("object") for e in drawing.info + drawing.text_info} - {None}
+            repeated = {o for o in objects if o in drawn_by}
+            for obj_name in objects:
+                drawn_by.setdefault(obj_name, []).append(case.Name or "Unnamed")
+            kept = {}
+            for i, entry in enumerate(drawing.info):
+                if entry.get("object") not in repeated:
+                    kept[i] = len(cls.shader_info)
+                    cls.shader_info.append(entry)
+            pickables = {}
+            for i, pickable in enumerate(drawing.pickables):
+                if pickable["info"] in kept:
+                    pickables[i] = len(cls.pickables)
+                    picked = dict(pickable, info=kept[pickable["info"]])
+                    if "parts" in picked:
+                        picked["parts"] = {
+                            part: [kept[j] for j in indices if j in kept] for part, indices in picked["parts"].items()
+                        }
+                    cls.pickables.append(picked)
+            for text in drawing.text_info:
+                if text.get("object") in repeated:
+                    continue
+                text = dict(text)
+                if "pickable" in text:
+                    if text["pickable"] in pickables:
+                        text["pickable"] = pickables[text["pickable"]]
+                    else:
+                        del text["pickable"]
+                cls.text_info.append(text)
+        for text in cls.text_info:
+            if text.get("force_of") and (names := drawn_by.get(text.get("object"))):
+                text["text"] = f"{', '.join(names)}: {text['text']}"
 
     @staticmethod
     def name_load_case(text_info: list[dict], group: ifcopenshell.entity_instance) -> list[dict]:
@@ -257,7 +305,7 @@ class LoadsDecorator(tool.Blender.ViewportDecorator):
 
     def draw_batch(self) -> None:
         """draw the 3D representation of loads"""
-        if not self.decoration_data.is_empty:
+        if self.shader_info:  # A soloed load's drawing is not decoration_data's.
             # What is hovered: a force's arrow, with its angle's arc and slope triangle if drawn.
             hovered = set()
             if self.hovered and self.hovered_part == "arrow":

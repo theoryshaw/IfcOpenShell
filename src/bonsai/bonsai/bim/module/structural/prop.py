@@ -53,6 +53,17 @@ def update_unused_loads_only(self: "BIMStructuralProperties", context: bpy.types
     bpy.ops.bim.load_structural_loads()
 
 
+def update_active_structural_load_index(self: "BIMStructuralProperties", context: bpy.types.Context) -> None:
+    if not 0 <= self.active_structural_load_index < len(self.structural_loads):
+        return
+    item = self.structural_loads[self.active_structural_load_index]
+    try:
+        load = tool.Ifc.get().by_id(item.ifc_definition_id)
+    except RuntimeError:
+        return
+    tool.Structural.select_load_items(load)
+
+
 def get_buildings(self: "BIMStructuralProperties", context: bpy.types.Context) -> list[tuple[str, str, str]]:
     if not StructuralAnalysisModelsData.is_loaded:
         StructuralAnalysisModelsData.load()
@@ -70,6 +81,8 @@ def update_activity_type(self: "BIMStructuralProperties", context: bpy.types.Con
 def update_show_loads(self: "BIMStructuralProperties", context: bpy.types.Context) -> None:
     from bonsai.bim.module.structural.decorator import show_loads
 
+    if not self.show_loads and self.solo_structural_load:
+        self.solo_structural_load = 0  # Hiding loads ends a solo, as showing a load case does.
     show_loads(self.show_loads)
 
 
@@ -227,7 +240,9 @@ class BIMStructuralProperties(PropertyGroup):
     active_load_group_activity_index: IntProperty(name="Active Load Group Activity Index")
 
     structural_loads: CollectionProperty(name="Structural Loads", type=StructuralLoad)
-    active_structural_load_index: IntProperty(name="Active Structural Load Index")
+    active_structural_load_index: IntProperty(
+        name="Active Structural Load Index", update=update_active_structural_load_index
+    )
     active_structural_load_id: IntProperty(name="Active Structural Load Id")
     is_editing_loads: BoolProperty(name="Is Editing Loads", default=False)
     structural_load_types: EnumProperty(items=get_structural_load_types, name="Structural Load Types")
@@ -277,6 +292,10 @@ class BIMStructuralProperties(PropertyGroup):
     # The other load cases shown with it, their loads only, by id, comma-separated: the one above is the active one,
     # whose moments are drawn and which the tools that work on one load case use.
     also_shown_load_groups: StringProperty(name="Also Shown", update=update_loads_display)
+    # A load definition drawn on its own wherever it is applied, by id, or 0: the load cases shown are set aside, not
+    # changed, and come back when it is no longer soloed, with Show Loads as it was before.
+    solo_structural_load: IntProperty(name="Solo Load", update=update_loads_display)
+    solo_was_showing: BoolProperty(name="Showing Loads Before Solo", default=False)
     force_display: EnumProperty(
         items=[
             ("BOTH", "Both", "Show the resultant of point forces with their components"),
@@ -429,6 +448,8 @@ class BIMStructuralProperties(PropertyGroup):
         activity_type: str
         load_group_to_show: str
         also_shown_load_groups: str
+        solo_structural_load: int
+        solo_was_showing: bool
         force_display: str
         force_scale: float
         show_force_angles: bool

@@ -1398,6 +1398,95 @@ class Structural(bonsai.core.tool.Structural):
         return True
 
     @classmethod
+    def get_load_items(cls, load: ifcopenshell.entity_instance) -> list[ifcopenshell.entity_instance]:
+        """The structural items a load is applied to, directly or as part of a load configuration"""
+        ifc_file = load.file
+        loads, items = [load], []
+        while loads:
+            current = loads.pop()
+            for inverse in ifc_file.get_inverse(current):
+                if inverse.is_a("IfcStructuralLoadConfiguration"):
+                    loads.append(inverse)
+                elif inverse.is_a("IfcStructuralActivity") and inverse.AppliedLoad == current:
+                    for rel in inverse.AssignedToStructuralItem:
+                        if (item := rel.RelatingElement) and item not in items:
+                            items.append(item)
+        return items
+
+    @classmethod
+    def get_load_load_cases(cls, load: ifcopenshell.entity_instance) -> list[ifcopenshell.entity_instance]:
+        """The load cases a load is applied in, by the outermost load group holding each of its applied loads"""
+
+        def get_parent(group: ifcopenshell.entity_instance) -> Union[ifcopenshell.entity_instance, None]:
+            for rel in group.HasAssignments:
+                if rel.is_a("IfcRelAssignsToGroup") and (parent := rel.RelatingGroup):
+                    if parent.is_a("IfcStructuralLoadGroup") and parent.PredefinedType != "LOAD_COMBINATION":
+                        return parent
+
+        ifc_file = load.file
+        loads, cases = [load], []
+        while loads:
+            current = loads.pop()
+            for inverse in ifc_file.get_inverse(current):
+                if inverse.is_a("IfcStructuralLoadConfiguration"):
+                    loads.append(inverse)
+                    continue
+                if not inverse.is_a("IfcStructuralActivity") or inverse.AppliedLoad != current:
+                    continue
+                for rel in inverse.HasAssignments:
+                    if not rel.is_a("IfcRelAssignsToGroup") or not (group := rel.RelatingGroup):
+                        continue
+                    if not group.is_a("IfcStructuralLoadGroup"):
+                        continue
+                    seen = [group]
+                    while (parent := get_parent(group)) and parent not in seen:
+                        seen.append(parent)
+                        group = parent
+                    if group not in cases:
+                        cases.append(group)
+        return sorted(cases, key=lambda c: c.id())
+
+    @classmethod
+    def get_solo_load(cls) -> Union[ifcopenshell.entity_instance, None]:
+        """The load definition soloed, drawn on its own wherever it is applied, if one is and it still exists"""
+        props = cls.get_structural_props()
+        if not props.solo_structural_load or not (ifc_file := tool.Ifc.get()):
+            return None
+        try:
+            return ifc_file.by_id(props.solo_structural_load)
+        except RuntimeError:
+            return None
+
+    @classmethod
+    def set_solo_load(cls, load: Union[ifcopenshell.entity_instance, None]) -> None:
+        """Solo a load definition, setting the load cases shown aside, or end the solo with None, bringing back
+        Show Loads as it was before"""
+        props = cls.get_structural_props()
+        if load is None:
+            if not props.solo_structural_load:
+                return
+            was_showing = props.solo_was_showing
+            props.solo_structural_load = 0
+            props.show_loads = was_showing
+            return
+        if not props.solo_structural_load:
+            props.solo_was_showing = props.show_loads
+        props.solo_structural_load = load.id()
+        props.show_loads = True
+
+    @classmethod
+    def select_load_items(cls, load: ifcopenshell.entity_instance) -> None:
+        """Select the objects of the structural items a load is applied to, in place of the current selection"""
+        context = bpy.context
+        view_layer = context.view_layer
+        objects = [
+            obj
+            for item in cls.get_load_items(load)
+            if (obj := tool.Ifc.get_object(item)) and view_layer.objects.get(obj.name)
+        ]
+        tool.Blender.set_objects_selection(context, objects[0] if objects else None, objects)
+
+    @classmethod
     def get_group_activities(
         cls, item: ifcopenshell.entity_instance, group: ifcopenshell.entity_instance
     ) -> list[ifcopenshell.entity_instance]:

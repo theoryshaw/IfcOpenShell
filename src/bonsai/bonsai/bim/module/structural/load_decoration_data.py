@@ -141,13 +141,23 @@ class ShaderInfo:
     # Whether applied loads push, as Edit Load has them while it previews their loads, by applied load id.
     preview_push: dict[int, bool] = {}
 
-    def __init__(self, load_group: Union[ifcopenshell.entity_instance, None] = None, also_shown: bool = False) -> None:
+    def __init__(
+        self,
+        load_group: Union[ifcopenshell.entity_instance, None] = None,
+        also_shown: bool = False,
+        only_load: Union[ifcopenshell.entity_instance, None] = None,
+        skip_items: Union[set[int], None] = None,
+    ) -> None:
         """
         :param load_group: The load group to draw, rather than the one chosen to show, as for a report.
         :param also_shown: Drawn in the viewport with the active load case shown: its loads only, without moments.
+        :param only_load: Draw only the applied loads of this load definition, as a load soloed is.
+        :param skip_items: Leave out the applied loads on these structural items, by id.
         """
         self.load_group = load_group
         self.also_shown = also_shown
+        self.only_load = only_load
+        self.skip_items = skip_items or set()
         self.is_empty = True
         self.shader = DecorationShader()
         self.curve_members: dict[str, MemberInfo] = {}
@@ -318,9 +328,11 @@ class ShaderInfo:
                     activities = [a for a in objects if a.is_a("IfcStructuralActivity")]
                     total_factor = factor * group_coef * rel_factor
                     for activity in activities:
+                        if not self.is_drawn_load(activity):
+                            continue
                         if len(activity.AssignedToStructuralItem):
                             element = activity.AssignedToStructuralItem[0].RelatingElement
-                            if element is not None:
+                            if element is not None and element.id() not in self.skip_items:
                                 if activity_type == "Action":
                                     if element.is_a("IfcStructuralCurveMember"):
                                         populate_members_dict("curve_members", element, activity, total_factor)
@@ -349,6 +361,14 @@ class ShaderInfo:
             return  # No load group is chosen, or the chosen one was removed.
         if group.is_a("IfcStructuralLoadGroup"):
             recursive_subgroups([group], 10, props.activity_type)
+
+    def is_drawn_load(self, activity: ifcopenshell.entity_instance) -> bool:
+        """Whether an applied load is drawn: with only_load, those of that load definition alone, which may be one of
+        a load configuration's"""
+        if not self.only_load:
+            return True
+        load = activity.AppliedLoad
+        return bool(load) and self.only_load in [load] + list(getattr(load, "Values", None) or [])
 
     def tag_new_entries(self, obj: Union[bpy.types.Object, None]) -> None:
         """Mark the drawing data added so far without an item as belonging to the item just drawn.

@@ -55,6 +55,135 @@ class TestLoadStructuralLoads(NewFile):
         props.show_unused_loads_only = False
         assert sorted(load.name for load in props.structural_loads) == ["Unused", "Used"]
 
+    def test_clicking_a_load_selects_the_items_it_is_applied_to(self):
+        ifc = ifcopenshell.file(schema="IFC4")
+        tool.Ifc.set(ifc)
+        shared = ifcopenshell.api.structural.add_structural_load(
+            ifc, name="Shared", ifc_class="IfcStructuralLoadSingleForce"
+        )
+        ifcopenshell.api.structural.add_structural_load(ifc, name="Unused", ifc_class="IfcStructuralLoadSingleForce")
+        objects = {}
+        for name in ("A", "B", "C"):
+            element = ifcopenshell.api.root.create_entity(ifc, ifc_class="IfcStructuralPointConnection", name=name)
+            obj = bpy.data.objects.new(name, None)
+            bpy.context.scene.collection.objects.link(obj)
+            tool.Ifc.link(element, obj)
+            objects[name] = obj
+        for name in ("A", "B"):
+            ifcopenshell.api.structural.add_structural_activity(
+                ifc,
+                applied_load=shared,
+                structural_member=tool.Ifc.get_entity(objects[name]),
+                ifc_class="IfcStructuralPointAction",
+            )
+        objects["C"].select_set(True)
+        bpy.ops.bim.load_structural_loads()
+        props = tool.Structural.get_structural_props()
+        names = [load.name for load in props.structural_loads]
+        props.active_structural_load_index = names.index("Shared")
+        assert sorted(obj.name for obj in bpy.context.selected_objects) == ["A", "B"]
+        assert bpy.context.view_layer.objects.active in (objects["A"], objects["B"])
+        props.active_structural_load_index = names.index("Unused")
+        assert not bpy.context.selected_objects
+        bpy.ops.bim.click_structural_load(index=names.index("Shared"))
+        assert sorted(obj.name for obj in bpy.context.selected_objects) == ["A", "B"]
+
+
+class TestSoloingALoad(NewFile):
+    """Problem 2.24's 10 k square to the chord at P, 14 out and 8 down from A, level with B: one load definition in
+    "About A" and "About B", with 4 k down at Q, 14 out and 16 down, in "About A" only"""
+
+    def add_point(self, ifc, name, x, z):
+        point = ifcopenshell.api.root.create_entity(ifc, ifc_class="IfcStructuralPointConnection", name=name)
+        mesh = bpy.data.meshes.new(name)
+        mesh.from_pydata([(0.0, 0.0, 0.0)], [], [])
+        obj = bpy.data.objects.new(name, mesh)
+        obj.location = (x, 0.0, z)
+        bpy.context.scene.collection.objects.link(obj)
+        tool.Ifc.link(point, obj)
+        return point
+
+    def apply(self, ifc, load, point, case):
+        activity = ifcopenshell.api.structural.add_structural_activity(
+            ifc, applied_load=load, structural_member=point, ifc_class="IfcStructuralPointAction"
+        )
+        ifcopenshell.api.group.assign_group(ifc, products=[activity], group=case)
+
+    def setup_cases(self):
+        ifc = ifcopenshell.file(schema="IFC4")
+        tool.Ifc.set(ifc)
+        ifcopenshell.api.root.create_entity(ifc, ifc_class="IfcProject")
+        points = {
+            "A": self.add_point(ifc, "A", 0.0, 0.0),
+            "B": self.add_point(ifc, "B", 0.0, -8.0),
+            "P": self.add_point(ifc, "P", 14.0, -8.0),
+            "Q": self.add_point(ifc, "Q", 14.0, -16.0),
+        }
+        bpy.context.view_layer.update()
+        about_a = ifcopenshell.api.structural.add_structural_load_case(ifc, name="About A")
+        about_b = ifcopenshell.api.structural.add_structural_load_case(ifc, name="About B")
+        tool.Structural.set_moment_centre(about_a, points["A"])
+        tool.Structural.set_moment_centre(about_b, points["B"])
+        ten = ifcopenshell.api.structural.add_structural_load(
+            ifc, name="10 k", ifc_class="IfcStructuralLoadSingleForce"
+        )
+        c = 10.0 / math.sqrt(2)
+        ifcopenshell.api.structural.edit_structural_load(
+            ifc, structural_load=ten, attributes={"ForceX": c, "ForceZ": c}
+        )
+        four = ifcopenshell.api.structural.add_structural_load(
+            ifc, name="4 k", ifc_class="IfcStructuralLoadSingleForce"
+        )
+        ifcopenshell.api.structural.edit_structural_load(ifc, structural_load=four, attributes={"ForceZ": -4.0})
+        for case in (about_a, about_b):
+            self.apply(ifc, ten, points["P"], case)
+        self.apply(ifc, four, points["Q"], about_a)
+        LoadGroupDecorationData.is_loaded = False
+        bpy.ops.bim.load_structural_loads()
+        props = tool.Structural.get_structural_props()
+        index = [load.name for load in props.structural_loads].index("10 k")
+        return ifc, about_a, about_b, ten, four, index
+
+    def test_shift_click_solos_and_again_brings_back_what_was_shown(self):
+        ifc, about_a, about_b, ten, four, index = self.setup_cases()
+        props = tool.Structural.get_structural_props()
+        assert not props.show_loads
+        with mock.patch.object(LoadsDecorator, "update"):
+            bpy.ops.bim.click_structural_load(index=index, solo=True)
+            assert tool.Structural.get_solo_load() == ten
+            assert props.show_loads
+            assert [obj.name for obj in bpy.context.selected_objects] == ["P"]  # Its item selected and active.
+            assert bpy.context.view_layer.objects.active.name == "P"
+            bpy.ops.bim.click_structural_load(index=index, solo=True)
+            assert tool.Structural.get_solo_load() is None
+            assert not props.show_loads
+
+    def test_showing_a_load_case_ends_the_solo(self):
+        ifc, about_a, about_b, ten, four, index = self.setup_cases()
+        with mock.patch.object(LoadsDecorator, "update"):
+            bpy.ops.bim.click_structural_load(index=index, solo=True)
+            bpy.ops.bim.show_structural_load_case(load_case=about_b.id())
+            assert tool.Structural.get_solo_load() is None
+            props = tool.Structural.get_structural_props()
+            assert props.show_loads and props.load_group_to_show == str(about_b.id())
+            bpy.ops.bim.click_structural_load(index=index, solo=True)
+            bpy.ops.bim.end_structural_load_solo()
+            assert props.show_loads and props.load_group_to_show == str(about_b.id())  # As it was before.
+
+    def test_the_soloed_load_is_drawn_alone_and_once_naming_its_load_cases(self):
+        from bonsai.bim.module.structural.shader import DecorationShader
+
+        ifc, about_a, about_b, ten, four, index = self.setup_cases()
+        with mock.patch.object(DecorationShader, "new", return_value=None):
+            LoadsDecorator.update_solo(ten)
+        values = [t["text"] for t in LoadsDecorator.text_info if t.get("force_of")]
+        assert len(values) == 1 and values[0].startswith("About A, About B: ")
+        assert any(e.get("primitive", {}).get("type") == "ARROW" for e in LoadsDecorator.shader_info)
+        # Only the 10 k at P: not the 4 k at Q, nor either load case's moments, which are drawn about A and B.
+        drawn = LoadsDecorator.shader_info + LoadsDecorator.text_info
+        assert {e.get("object") for e in drawn} == {"P"}
+        LoadsDecorator.shader_info, LoadsDecorator.text_info, LoadsDecorator.pickables = [], [], []
+
 
 class TestShowingSeveralLoadCases(NewFile):
     """Eyes show several load cases at once, one of them active, whose moments are drawn"""

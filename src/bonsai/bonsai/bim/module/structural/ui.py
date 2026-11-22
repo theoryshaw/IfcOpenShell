@@ -293,10 +293,29 @@ def draw_chain_reverse_button(layout: bpy.types.UILayout, chain: list[int], item
         op.item, op.load_case = item, load_case
 
 
+def draw_solo_row(layout: bpy.types.UILayout) -> None:
+    """Name the load soloed, if one is, with a button to end the solo"""
+    if not (load := tool.Structural.get_solo_load()):
+        return
+    row = layout.row(align=True)
+    row.alert = True
+    text = f"Solo: {load.Name or 'Unnamed'}"
+    if not tool.Structural.get_load_load_cases(load):
+        text += " (in no load case)"
+    row.label(text=text, icon="SOLO_ON")
+    row.operator("bim.end_structural_load_solo", text="", icon="X")
+
+
+def is_showing_load_cases() -> bool:
+    """Whether load cases are shown, or would be once a solo ends, which sets them aside"""
+    props = tool.Structural.get_structural_props()
+    return props.solo_was_showing if tool.Structural.get_solo_load() else props.show_loads
+
+
 def get_load_case_eye(load_case: int) -> str:
     """An open eye for the load cases whose loads are shown, closed for the others"""
     props = tool.Structural.get_structural_props()
-    shown = props.show_loads and (
+    shown = is_showing_load_cases() and (
         props.load_group_to_show == str(load_case) or load_case in tool.Structural.get_also_shown_ids()
     )
     return "HIDE_OFF" if shown else "HIDE_ON"
@@ -307,7 +326,7 @@ def is_active_load_case(load_case: int) -> bool:
     shown with it"""
     props = tool.Structural.get_structural_props()
     return bool(
-        props.show_loads and props.load_group_to_show == str(load_case) and tool.Structural.get_also_shown_ids()
+        is_showing_load_cases() and props.load_group_to_show == str(load_case) and tool.Structural.get_also_shown_ids()
     )
 
 
@@ -635,6 +654,7 @@ class BIM_PT_structural_load_cases(Panel):
         row.operator("bim.add_structural_load_case", icon="ADD")
         if self.props.show_loads:
             row.operator("bim.hide_structural_load_cases", text="", icon="HIDE_ON")
+        draw_solo_row(self.layout)
 
         for load_case in StructuralLoadCasesData.data["load_cases"]:
             self.draw_load_case_ui(load_case)
@@ -979,6 +999,8 @@ class BIM_PT_structural_loads(Panel):
         else:
             row.operator("bim.load_structural_loads", text="", icon="GREASEPENCIL")
 
+        draw_solo_row(self.layout)
+
         if self.props.is_editing_loads:
             self.layout.template_list(
                 "BIM_UL_structural_loads",
@@ -1004,10 +1026,17 @@ class BIM_UL_structural_loads(UIList):
         icon,
         active_data,
         active_propname,
+        index=0,
     ):
         if item:
             row = layout.row(align=True)
-            row.label(text=f"{item.name} ({item.number_of_inverse_references})")
+            op = row.operator(
+                "bim.click_structural_load",
+                text=f"{item.name} ({item.number_of_inverse_references})",
+                emboss=False,
+                icon="SOLO_ON" if data.solo_structural_load == item.ifc_definition_id else "NONE",
+            )
+            op.index = index
             row.label(text=StructuralLoadsData.data["load_classes"][item.ifc_definition_id])
 
             if data.active_structural_load_id == item.ifc_definition_id:

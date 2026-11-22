@@ -4497,6 +4497,7 @@ class ShowStructuralLoadCase(bpy.types.Operator):
         return self.execute(context)
 
     def execute(self, context):
+        tool.Structural.set_solo_load(None)  # Showing a load case ends a solo, bringing back what was shown.
         props = tool.Structural.get_structural_props()
         case = str(self.load_case)
         active = props.load_group_to_show if props.show_loads else ""
@@ -4540,8 +4541,52 @@ class HideStructuralLoadCases(bpy.types.Operator):
 
     def execute(self, context):
         props = tool.Structural.get_structural_props()
+        tool.Structural.set_solo_load(None)
         tool.Structural.set_also_shown_ids([])
         props.show_loads = False
+        return {"FINISHED"}
+
+
+class ClickStructuralLoad(bpy.types.Operator):
+    bl_idname = "bim.click_structural_load"
+    bl_label = "Click Structural Load"
+    bl_description = (
+        "Select the structural items this load is applied to.\n"
+        "Shift: also solo it, drawing it alone wherever it is applied; Shift again ends the solo"
+    )
+    bl_options = {"REGISTER"}
+    index: bpy.props.IntProperty()
+    solo: bpy.props.BoolProperty(default=False, options={"SKIP_SAVE"})
+
+    def invoke(self, context, event):
+        self.solo = event.shift
+        return self.execute(context)
+
+    def execute(self, context):
+        props = tool.Structural.get_structural_props()
+        if not 0 <= self.index < len(props.structural_loads):
+            return {"CANCELLED"}
+        load = tool.Ifc.get().by_id(props.structural_loads[self.index].ifc_definition_id)
+        if self.solo and tool.Structural.get_solo_load() == load:
+            tool.Structural.set_solo_load(None)
+            return {"FINISHED"}
+        if self.solo:
+            tool.Structural.set_solo_load(load)  # Its items selected too, below, as a plain click does.
+        if props.active_structural_load_index == self.index:
+            tool.Structural.select_load_items(load)  # Setting the same index runs no update.
+        else:
+            props.active_structural_load_index = self.index  # Which selects its items.
+        return {"FINISHED"}
+
+
+class EndStructuralLoadSolo(bpy.types.Operator):
+    bl_idname = "bim.end_structural_load_solo"
+    bl_label = "End Solo"
+    bl_description = "Stop drawing the soloed load on its own, bringing back the load cases shown before"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        tool.Structural.set_solo_load(None)
         return {"FINISHED"}
 
 

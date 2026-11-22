@@ -2104,7 +2104,7 @@ class ShaderInfo:
             head = min(2 * spacing * thickness * unit, length * 0.5)
             arrow_tail = tip - direction * head
             # As wide as a solid shaft, which Arrow Thickness scales with its head.
-            self.add_dashed_line(tail, arrow_tail, size, color, thickness=3.0 * thickness)
+            self.add_dashed_line(tail, arrow_tail, size, color, thickness=3.0 * thickness, cover=True)
             length = head
         # The shader draws within a triangle from the tip, which is made wide enough at the head's base for its
         # flare, ARROW_HEAD_FLARE of its length to either side: a long arrow's would otherwise narrow its head.
@@ -2166,8 +2166,13 @@ class ShaderInfo:
         color: tuple,
         dashed: bool = True,
         thickness: float = 1.0,
+        cover: bool = False,
     ) -> None:
-        """A line, dashed unless not, thickness times as wide as a construction line, as a moved load's shaft is"""
+        """A line, dashed unless not, thickness times as wide as a construction line, as a moved load's shaft is.
+
+        :param cover: Draw it opaque, with the arrows, over the dashed lines drawn before them, as a moved load's
+            shaft is part of its arrow rather than construction.
+        """
         width = size * 0.003 * thickness
         length = np.linalg.norm(end - start)
         if not length:
@@ -2183,8 +2188,11 @@ class ShaderInfo:
                 "shader": self.shader.new("DASHED LINE"),
                 "args": {"position": position, "coord": [(1, 0, 0), (-1, 0, 0), (1, length, 0), (-1, length, 0)] * 2},
                 "indices": indices,
-                # A spacing far longer than the line draws it solid.
-                "uniforms": [["color", color], ["spacing", size * 0.03 if dashed else size * 1000]],
+                # A spacing far longer than the line draws it solid. The shader halves alpha, which doubled is opaque.
+                "uniforms": [
+                    ["color", (*color[:3], 2 * color[3]) if cover else color],
+                    ["spacing", size * 0.03 if dashed else size * 1000],
+                ],
                 "primitive": {
                     "type": "LINE",
                     "start": start,
@@ -2192,6 +2200,7 @@ class ShaderInfo:
                     "size": size,
                     "dashed": dashed,
                     "thickness": thickness,
+                    "cover": cover,
                 },
                 "color": color,
             }

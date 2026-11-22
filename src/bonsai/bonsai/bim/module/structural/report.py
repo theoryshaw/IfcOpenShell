@@ -1397,7 +1397,8 @@ def write_diagram(
     placed: list[tuple[float, float, float, float]] = []
     # The arrows and solid lines drawn, which labels keep off.
     segments: list[tuple[np.ndarray, np.ndarray]] = []
-    for shape in shapes:
+    # Dashed lines first, as in the viewport, so that arrows and solid lines cover them.
+    for shape in sorted(shapes, key=lambda shape: not (shape.get("dashed") and not shape.get("cover"))):
         color, size = get_svg_color(shape["color"]), shape["size"] * scale
         if shape["type"] == "LINE":
             (x1, y1), (x2, y2) = to_svg(shape["start"]), to_svg(shape["end"])

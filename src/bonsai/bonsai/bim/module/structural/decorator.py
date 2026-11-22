@@ -326,7 +326,16 @@ class LoadsDecorator(tool.Blender.ViewportDecorator):
                 hovered = set(self.hovered.get("whole") or [self.hovered["info"]])
             elif self.hovered:
                 hovered = set(self.hovered.get("parts", {}).get(self.hovered_part, []))
-            for i, info in enumerate(self.shader_info):
+
+            # Dashed lines first, as axes and construction are, so that arrows, a moved load's dashed shaft with
+            # them, and solid lines cover them.
+            def is_under(info: dict) -> bool:
+                primitive = info.get("primitive") or {}
+                return bool(primitive.get("dashed")) and not primitive.get("cover")
+
+            order = sorted(range(len(self.shader_info)), key=lambda i: not is_under(self.shader_info[i]))
+            for i in order:
+                info = self.shader_info[i]
                 if not self.is_visible(info):
                     continue
                 shader = info["shader"]

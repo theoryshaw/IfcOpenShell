@@ -18,6 +18,7 @@
 #
 # This file was generated with the assistance of an AI coding tool.
 
+import math
 import re
 from unittest import mock
 
@@ -135,6 +136,17 @@ class TestMomentDetail(NewFile):
         assert not any(e.get("primitive", {}).get("dashed") for e in moments)
         assert len([t for t in texts if re.match(r"M. = ", t)]) == 4
         assert any(t.startswith("ΣM") for t in texts)
+
+    def test_a_sum_of_zero_is_drawn_as_a_full_circle_round_the_centre(self):
+        case = self.setup_case()
+        for activity in tool.Ifc.get().by_type("IfcStructuralActivity"):
+            if activity.id() != self.activities["F4"]:  # Only the plumb force through A is left.
+                ifcopenshell.api.group.unassign_group(tool.Ifc.get(), products=[activity], group=case)
+        moments, texts = self.draw(case, "MINIMAL")
+        assert any(re.fullmatch(r"M. = 0", t) for t in texts)
+        lines = [e["primitive"] for e in moments if e.get("primitive", {}).get("type") == "LINE"]
+        radii = {round(float(math.dist(line["start"], (0, 0, 0))), 6) for line in lines}
+        assert len(lines) == 36 and len(radii) == 1  # A closed circle round A: an arc with a head has 26.
 
     def test_hovering_a_force_shows_all_of_its_own_detail(self):
         self.setup_case()

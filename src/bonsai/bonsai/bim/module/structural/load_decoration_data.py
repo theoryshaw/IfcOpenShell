@@ -1183,6 +1183,12 @@ class ShaderInfo:
         first = len(self.info)
         if abs(moment) < 10 ** -(decimals + 1):
             text = f"{symbol} = 0"
+            # A full circle, turning neither way, so that the centre is marked as it is with a moment.
+            radius = 0.35 * size
+            angles = np.linspace(0, 2 * np.pi, 37)
+            circle = [at + radius * np.array((np.cos(a), 0.0, np.sin(a))) for a in angles]
+            for a, b in zip(circle[:-1], circle[1:]):
+                self.add_dashed_line(a, b, size, color, dashed=False)
         else:
             text = f"{symbol} = {moment:+.{decimals}f} {self.moment_unit}"  # Counter-clockwise positive.
             radius, sweep = 0.35 * size, (1 if moment > 0 else -1) * np.radians(270)

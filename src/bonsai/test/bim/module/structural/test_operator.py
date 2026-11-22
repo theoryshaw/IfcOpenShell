@@ -1243,6 +1243,18 @@ class TestMovingLoadsToAPoint(NewFile):
         assert tool.Structural.get_applied_moment(activity.AppliedLoad) == pytest.approx(2.0)
         assert tool.Structural.get_moved_from(activity) == case
 
+    def test_lists_name_where_a_moved_load_came_from(self):
+        from bonsai.bim.module.structural.data import StructuralLoadCasesData, StructuralLoadsData
+
+        ifc, model, case, points, loads = self.setup_roof()
+        bpy.ops.bim.move_structural_loads_to_point(load_case=case.id(), point=str(points["ROOF"].id()), target="NEW")
+        target, activity = self.get_moved(ifc, case)
+        rows = {a["id"]: a for c in StructuralLoadCasesData.load_cases() for a in c["activities"]}
+        assert rows[activity.id()]["name"].endswith(" ← At Roof") and rows[activity.id()]["moved"]
+        source_rows = [a for c in StructuralLoadCasesData.load_cases() if c["id"] == case.id() for a in c["activities"]]
+        assert source_rows and not any(a["moved"] or "←" in a["name"] for a in source_rows)
+        assert StructuralLoadsData.moved_from() == {activity.AppliedLoad.id(): "At Roof"}
+
     def test_a_moved_load_follows_its_loads_after_any_ifc_operator(self):
         ifc, model, case, points, loads = self.setup_roof()
         bpy.ops.bim.move_structural_loads_to_point(load_case=case.id(), point=str(points["ROOF"].id()), target="NEW")

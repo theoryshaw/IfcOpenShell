@@ -461,10 +461,14 @@ class StructuralLoadCasesData:
                         load_groups.append({"id": related_object.id(), "name": related_object.Name or "Unnamed"})
                     elif related_object.is_a("IfcStructuralActivity"):
                         rels = related_object.AssignedToStructuralItem
+                        source = tool.Structural.get_moved_from(related_object)
                         activities.append(
                             {
                                 "id": related_object.id(),
-                                "name": cls.activity_name(related_object),
+                                # A moved load names where it came from, as its arrow does.
+                                "name": cls.activity_name(related_object)
+                                + (f" ← {source.Name or 'Unnamed'}" if source else ""),
+                                "moved": bool(source),
                                 "item": rels[0].RelatingElement.id() if rels else 0,
                                 "item_name": (rels[0].RelatingElement.Name if rels else None) or "Unnamed",
                                 "order": tool.Structural.get_draw_order_key(related_object),
@@ -561,6 +565,7 @@ class StructuralLoadsData:
             "total_loads": cls.total_loads(),
             "load_classes": cls.load_classes(),
             "structural_load_types": cls.structural_load_types(),
+            "moved_from": cls.moved_from(),
         }
         cls.is_loaded = True
 
@@ -571,6 +576,17 @@ class StructuralLoadsData:
     @classmethod
     def load_classes(cls):
         return {l.id(): l.is_a() for l in tool.Ifc.get().by_type("IfcStructuralLoad")}
+
+    @classmethod
+    def moved_from(cls) -> dict[int, str]:
+        """The load cases each moved load's definition was moved from, by its id, as its arrow names them"""
+        sources: dict[int, list[str]] = {}
+        for activity in tool.Ifc.get().by_type("IfcStructuralActivity"):
+            if activity.AppliedLoad and (source := tool.Structural.get_moved_from(activity)):
+                names = sources.setdefault(activity.AppliedLoad.id(), [])
+                if (name := source.Name or "Unnamed") not in names:
+                    names.append(name)
+        return {load: ", ".join(names) for load, names in sources.items()}
 
     @classmethod
     def structural_load_types(cls):

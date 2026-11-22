@@ -762,6 +762,8 @@ class BIM_PT_structural_load_cases(Panel):
                 draw_chain_reverse_button(row, chain, item, load_case["id"])
             for i, activity in enumerate(activities):
                 row = box.row(align=True)
+                # A moved load, kept in step with its source, dimmed as derived rather than entered.
+                row.active = not activity.get("moved")
                 draw_activity_select_button(row, activity["id"])
                 row.label(text=activity["name"])
                 draw_chain_order_buttons(row, chain, i, load_case["id"])
@@ -1044,9 +1046,11 @@ class BIM_UL_structural_loads(UIList):
     ):
         if item:
             row = layout.row(align=True)
+            source = StructuralLoadsData.data["moved_from"].get(item.ifc_definition_id)
+            row.active = not source  # A moved load, dimmed as derived, as in the load case it is in.
             op = row.operator(
                 "bim.click_structural_load",
-                text=f"{item.name} ({item.number_of_inverse_references})",
+                text=f"{item.name} ({item.number_of_inverse_references})" + (f" ← {source}" if source else ""),
                 emboss=False,
                 icon="SOLO_ON" if data.solo_structural_load == item.ifc_definition_id else "NONE",
             )

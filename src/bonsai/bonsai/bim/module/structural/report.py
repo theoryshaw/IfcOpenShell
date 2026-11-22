@@ -40,6 +40,7 @@ import pystache
 
 import bonsai.tool as tool
 from bonsai.bim.module.structural.load_decoration_data import ShaderInfo, box_crosses_segments
+from bonsai.bim.module.structural.shader import ARROW_HEAD_FLARE
 
 # What is white in the viewport, as resultants, made near black for paper; symbols in it are left uncoloured.
 NEUTRAL = "#222222"
@@ -1419,9 +1420,8 @@ def write_diagram(
             head = min(size * shape["spacing"] * shape.get("thickness", 1.0) * 0.25, length * 0.5)
             base = tip - direction * head
             stroke = (3 if shape["spacing"] > 0.2 else 2) * shape.get("thickness", 1.0)
-            corners = " ".join(
-                f"{x:.1f},{y:.1f}" for x, y in (tip, base + across * head * 0.4, base - across * head * 0.4)
-            )
+            flare = across * head * ARROW_HEAD_FLARE
+            corners = " ".join(f"{x:.1f},{y:.1f}" for x, y in (tip, base + flare, base - flare))
             elements.append(
                 f'<line x1="{tail[0]:.1f}" y1="{tail[1]:.1f}" x2="{base[0]:.1f}" y2="{base[1]:.1f}" '
                 f'stroke="{color}" stroke-width="{stroke:.2f}"/>'

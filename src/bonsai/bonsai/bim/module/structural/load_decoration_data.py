@@ -33,7 +33,7 @@ import numpy.typing as npt
 from mathutils import Vector
 
 import bonsai.tool as tool
-from bonsai.bim.module.structural.shader import DecorationShader
+from bonsai.bim.module.structural.shader import ARROW_HEAD_FLARE, DecorationShader
 
 
 class MemberInfo(TypedDict):
@@ -2018,8 +2018,11 @@ class ShaderInfo:
             # As wide as a solid shaft, which Arrow Thickness scales with its head.
             self.add_dashed_line(tail, arrow_tail, size, color, thickness=3.0 * thickness)
             length = head
+        # The shader draws within a triangle from the tip, which is made wide enough at the head's base for its
+        # flare, ARROW_HEAD_FLARE of its length to either side: a long arrow's would otherwise narrow its head.
+        spread = max(1.0, 1.1 * ARROW_HEAD_FLARE * length / unit)
         d2, d3 = self.get_perpendicular_axes(direction)
-        d2, d3 = d2 * unit, d3 * unit
+        d2, d3 = d2 * unit * spread, d3 * unit * spread
         self.info.append(
             {
                 "shader": self.shader.new("SINGLE FORCE"),
@@ -2027,10 +2030,10 @@ class ShaderInfo:
                     "position": [tip, arrow_tail + d2, arrow_tail - d2, arrow_tail + d3, arrow_tail - d3],
                     "coord": [
                         (0, 0, 0),
-                        (1, length / unit, 0),
-                        (-1, length / unit, 0),
-                        (1, length / unit, 0),
-                        (-1, length / unit, 0),
+                        (spread, length / unit, 0),
+                        (-spread, length / unit, 0),
+                        (spread, length / unit, 0),
+                        (-spread, length / unit, 0),
                     ],
                 },
                 "indices": [(0, 1, 2), (0, 3, 4)],

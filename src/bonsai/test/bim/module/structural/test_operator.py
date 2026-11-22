@@ -158,6 +158,19 @@ class TestSoloingALoad(NewFile):
             assert tool.Structural.get_solo_load() is None
             assert not props.show_loads
 
+    def test_an_applied_loads_button_selects_its_item_and_with_shift_solos_its_load(self):
+        ifc, about_a, about_b, ten, four, index = self.setup_cases()
+        activity = next(a for a in ifc.by_type("IfcStructuralActivity") if a.AppliedLoad == four)
+        with mock.patch.object(LoadsDecorator, "update"):
+            bpy.ops.bim.click_structural_activity(activity=activity.id())
+            assert [obj.name for obj in bpy.context.selected_objects] == ["Q"]
+            assert bpy.context.view_layer.objects.active.name == "Q"
+            assert tool.Structural.get_solo_load() is None
+            bpy.ops.bim.click_structural_activity(activity=activity.id(), solo=True)
+            assert tool.Structural.get_solo_load() == four
+            bpy.ops.bim.click_structural_activity(activity=activity.id(), solo=True)
+            assert tool.Structural.get_solo_load() is None
+
     def test_showing_a_load_case_ends_the_solo(self):
         ifc, about_a, about_b, ten, four, index = self.setup_cases()
         with mock.patch.object(LoadsDecorator, "update"):

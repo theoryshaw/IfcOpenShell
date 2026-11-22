@@ -293,6 +293,17 @@ def draw_chain_reverse_button(layout: bpy.types.UILayout, chain: list[int], item
         op.item, op.load_case = item, load_case
 
 
+def draw_activity_select_button(layout: bpy.types.UILayout, activity: int) -> None:
+    """A button selecting an applied load's item, which with shift solos its load, shown pressed while it is"""
+    solo = tool.Structural.get_solo_load()
+    try:
+        soloed = bool(solo) and tool.Ifc.get().by_id(activity).AppliedLoad == solo
+    except RuntimeError:
+        soloed = False
+    icon = "SOLO_ON" if soloed else "RESTRICT_SELECT_OFF"
+    layout.operator("bim.click_structural_activity", text="", icon=icon, emboss=False).activity = activity
+
+
 def draw_solo_row(layout: bpy.types.UILayout) -> None:
     """Name the load soloed, if one is, with a button to end the solo"""
     if not (load := tool.Structural.get_solo_load()):
@@ -751,6 +762,7 @@ class BIM_PT_structural_load_cases(Panel):
                 draw_chain_reverse_button(row, chain, item, load_case["id"])
             for i, activity in enumerate(activities):
                 row = box.row(align=True)
+                draw_activity_select_button(row, activity["id"])
                 row.label(text=activity["name"])
                 draw_chain_order_buttons(row, chain, i, load_case["id"])
                 row.operator("bim.edit_structural_load_values", text="", icon="GREASEPENCIL").activity = activity["id"]
@@ -889,6 +901,7 @@ class BIM_UL_structural_activities(UIList):
     ):
         if item:
             row = layout.row(align=True)
+            draw_activity_select_button(row, item.ifc_definition_id)
             row.label(text=item.name)
             row.label(text=item.applied_load_class)
             row.operator(

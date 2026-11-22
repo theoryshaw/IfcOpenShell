@@ -4579,6 +4579,40 @@ class ClickStructuralLoad(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class ClickStructuralActivity(bpy.types.Operator):
+    bl_idname = "bim.click_structural_activity"
+    bl_label = "Select Applied Load's Item"
+    bl_description = (
+        "Select the structural item this load is applied to, and make it active.\n"
+        "Shift: also solo its load, drawing it alone wherever it is applied; Shift again ends the solo"
+    )
+    bl_options = {"REGISTER"}
+    activity: bpy.props.IntProperty()
+    solo: bpy.props.BoolProperty(default=False, options={"SKIP_SAVE"})
+
+    def invoke(self, context, event):
+        self.solo = event.shift
+        return self.execute(context)
+
+    def execute(self, context):
+        try:
+            activity = tool.Ifc.get().by_id(self.activity)
+        except RuntimeError:
+            return {"CANCELLED"}
+        load = activity.AppliedLoad
+        if self.solo and load and tool.Structural.get_solo_load() == load:
+            tool.Structural.set_solo_load(None)
+            return {"FINISHED"}
+        if self.solo and load:
+            tool.Structural.set_solo_load(load)
+        items = [rel.RelatingElement for rel in activity.AssignedToStructuralItem if rel.RelatingElement]
+        objects = [
+            obj for item in items if (obj := tool.Ifc.get_object(item)) and context.view_layer.objects.get(obj.name)
+        ]
+        tool.Blender.set_objects_selection(context, objects[0] if objects else None, objects)
+        return {"FINISHED"}
+
+
 class EndStructuralLoadSolo(bpy.types.Operator):
     bl_idname = "bim.end_structural_load_solo"
     bl_label = "End Solo"

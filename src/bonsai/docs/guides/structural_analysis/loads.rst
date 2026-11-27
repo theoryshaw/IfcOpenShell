@@ -49,6 +49,13 @@ an item's **Applied Loads** panel, or the structural tool. The dialog asks for:
 Load Case
    The load case to add the load to, or a new one. It starts on the load case shown in the viewport.
 
+Axes
+   For a force on a curve or surface member, the axes it is given in: **Global**, the project's, with Z
+   vertical, or **Local**, the member's own. A surface member's local Z is normal to its surface, as wind
+   or pressure acts; a curve member's local X runs along it and its Z follows the member's Axis. A force
+   given in local axes is named with "local". Point connections take forces in global axes, or in their
+   own point axes (below).
+
 Input
    How the force is entered:
 

@@ -12,6 +12,7 @@ import ifcopenshell.api.structural
 import ifcopenshell.api.unit
 import ifcopenshell.guid
 import ifcopenshell.util.element
+import ifcopenshell.util.structural
 import pytest
 from mathutils import Vector
 
@@ -33,6 +34,96 @@ class TestLoadBoundaryConditions(NewFile):
         props.filtered_boundary_conditions = True
         bpy.ops.bim.load_boundary_conditions()
         assert sorted(c.name for c in props.boundary_conditions) == ["Pinned"]
+
+
+class TestEnableEditingStructuralItemAxis(NewFile):
+    def test_starting_square_to_a_member_stood_up_along_its_axis(self):
+        bpy.ops.bim.create_project()
+        props = tool.Root.get_root_props()
+        props.ifc_product, props.ifc_class, props.representation_template = (
+            "IfcStructuralItem",
+            "IfcStructuralCurveMember",
+            "EDGE",
+        )
+        bpy.ops.bim.add_element(skip_dialog=True)
+        member = tool.Ifc.get().by_type("IfcStructuralCurveMember")[0]
+        obj = tool.Ifc.get_object(member)
+        bpy.context.view_layer.objects.active = obj
+        obj.data.vertices[1].co = obj.data.vertices[0].co + Vector((0.0, 0.0, 3.0))
+        assert member.Axis.DirectionRatios == (0.0, 0.0, 1.0)  # Now parallel to the member.
+
+        bpy.ops.bim.enable_editing_structural_item_axis()
+        empty = tool.Structural.get_object_structural_props(obj).axis_empty
+        x, y, z = (empty.matrix_world.col[i].to_3d() for i in range(3))
+        assert abs(x.dot(Vector((0.0, 0.0, 1.0)))) == pytest.approx(1.0)
+        assert y.length == pytest.approx(1.0)
+        assert abs(z.dot(x)) < 1e-6
+
+        bpy.ops.bim.edit_structural_item_axis()
+        assert abs(Vector(member.Axis.DirectionRatios).normalized().z) < 1e-6
+
+    def add_member(self) -> tuple:
+        props = tool.Root.get_root_props()
+        props.ifc_product, props.ifc_class, props.representation_template = (
+            "IfcStructuralItem",
+            "IfcStructuralCurveMember",
+            "EDGE",
+        )
+        bpy.ops.bim.add_element(skip_dialog=True)
+        member = tool.Ifc.get().by_type("IfcStructuralCurveMember")[-1]
+        obj = tool.Ifc.get_object(member)
+        bpy.context.view_layer.objects.active = obj
+        return member, obj
+
+    def test_keeping_the_axis_of_a_member_rotated_as_a_whole(self):
+        # Axis is relative to the member's placement, as its edge is, so it turns with the member.
+        bpy.ops.bim.create_project()
+        member, obj = self.add_member()
+        obj.rotation_euler = (0.0, math.radians(90), 0.0)
+        obj.location = (2.0, 3.0, 4.0)
+        bpy.context.view_layer.update()
+        bpy.ops.bim.enable_editing_structural_item_axis()
+        empty = tool.Structural.get_object_structural_props(obj).axis_empty
+        assert tool.Structural.get_object_structural_props(obj).axis_angle == pytest.approx(0.0)
+        # At the edge's start, wherever the member is.
+        assert (empty.matrix_world.translation - obj.matrix_world @ obj.data.vertices[0].co).length < 1e-6
+        bpy.ops.bim.edit_structural_item_axis()
+        assert tuple(Vector(member.Axis.DirectionRatios)) == pytest.approx((0.0, 0.0, 1.0), abs=1e-6)
+
+    def test_projecting_an_axis_nearly_along_the_member(self):
+        bpy.ops.bim.create_project()
+        member, obj = self.add_member()
+        angle = math.radians(1)
+        ifcopenshell.api.structural.edit_structural_item_axis(
+            tool.Ifc.get(), structural_item=member, axis=(math.cos(angle), 0.0, math.sin(angle))
+        )
+        bpy.ops.bim.enable_editing_structural_item_axis()
+        bpy.ops.bim.edit_structural_item_axis()
+        assert tuple(Vector(member.Axis.DirectionRatios)) == pytest.approx((0.0, 0.0, 1.0), abs=1e-6)
+
+    def test_rolling_the_axis_about_the_member(self):
+        bpy.ops.bim.create_project()
+        member, obj = self.add_member()
+        obj.rotation_euler = (0.0, 0.0, math.radians(90))  # Along world Y; the roll is about the member itself.
+        bpy.context.view_layer.update()
+        bpy.ops.bim.enable_editing_structural_item_axis()
+        tool.Structural.get_object_structural_props(obj).axis_angle = 90.0
+        bpy.ops.bim.edit_structural_item_axis()
+        assert tuple(Vector(member.Axis.DirectionRatios)) == pytest.approx((0.0, -1.0, 0.0), abs=1e-6)
+
+
+class TestAddCurveItem(NewFile):
+    def test_adding_a_curve_member_in_ifc2x3_which_has_no_axis(self):
+        tool.Project.get_project_props().export_schema = "IFC2X3"
+        bpy.ops.bim.create_project()
+        props = tool.Root.get_root_props()
+        props.ifc_product, props.ifc_class, props.representation_template = (
+            "IfcStructuralItem",
+            "IfcStructuralCurveMember",
+            "EDGE",
+        )
+        bpy.ops.bim.add_element(skip_dialog=True)
+        assert tool.Ifc.get().by_type("IfcStructuralCurveMember")
 
 
 class TestLoadStructuralLoads(NewFile):
@@ -778,6 +869,92 @@ class TestKeepingMomentsAfterMoves(NewFile):
         assert not UNKEPT_ITEMS
         assert not ShaderInfo.preview
         assert tool.Structural.get_force(load) == pytest.approx((0.0, 0.0, -10.0))
+
+
+class TestApplyStructuralLoadAxes(NewFile):
+    def make_item(self, ifc_class, z_down=False):
+        ifc = ifcopenshell.file(schema="IFC4")
+        tool.Ifc.set(ifc)
+        ifcopenshell.api.root.create_entity(ifc, ifc_class="IfcProject")
+        model = ifcopenshell.api.structural.add_structural_analysis_model(ifc)
+        if z_down:
+            # As RFEM places its models: Z down.
+            model.SharedPlacement = ifc.createIfcLocalPlacement(
+                None,
+                ifc.createIfcAxis2Placement3D(
+                    ifc.createIfcCartesianPoint((0.0, 0.0, 0.0)),
+                    ifc.createIfcDirection((0.0, 0.0, -1.0)),
+                    ifc.createIfcDirection((1.0, 0.0, 0.0)),
+                ),
+            )
+        item = ifcopenshell.api.root.create_entity(ifc, ifc_class=ifc_class)
+        ifcopenshell.api.structural.assign_structural_analysis_model(
+            ifc, products=[item], structural_analysis_model=model
+        )
+        obj = bpy.data.objects.new("Item", None)
+        bpy.context.scene.collection.objects.link(obj)
+        tool.Ifc.link(item, obj)
+        bpy.ops.object.select_all(action="DESELECT")
+        obj.select_set(True)
+        return ifc, item
+
+    def get_activity(self, item):
+        return ifcopenshell.util.structural.get_item_activities(item)[0]
+
+    def test_a_force_normal_to_a_surface(self):
+        ifc, surface = self.make_item("IfcStructuralSurfaceMember")
+        bpy.ops.bim.apply_structural_load(load_group="0", axes="LOCAL_COORDS", z=-2.0)
+        activity = self.get_activity(surface)
+        assert activity.GlobalOrLocal == "LOCAL_COORDS"
+        assert activity.AppliedLoad.PlanarForceZ == -2.0
+        assert activity.AppliedLoad.Name.endswith(" local")
+
+    def test_global_by_default(self):
+        ifc, surface = self.make_item("IfcStructuralSurfaceMember")
+        bpy.ops.bim.apply_structural_load(load_group="0", z=-2.0)
+        assert self.get_activity(surface).GlobalOrLocal == "GLOBAL_COORDS"
+
+    def test_local_values_are_not_turned_into_the_model_axes(self):
+        ifc, surface = self.make_item("IfcStructuralSurfaceMember", z_down=True)
+        bpy.ops.bim.apply_structural_load(load_group="0", axes="LOCAL_COORDS", z=-2.0)
+        assert self.get_activity(surface).AppliedLoad.PlanarForceZ == -2.0
+
+    def test_global_values_are_turned_into_the_model_axes(self):
+        ifc, surface = self.make_item("IfcStructuralSurfaceMember", z_down=True)
+        bpy.ops.bim.apply_structural_load(load_group="0", axes="GLOBAL_COORDS", z=-2.0)
+        assert self.get_activity(surface).AppliedLoad.PlanarForceZ == 2.0
+
+    def test_a_point_connection_takes_global_axes(self):
+        ifc, point = self.make_item("IfcStructuralPointConnection")
+        bpy.ops.bim.apply_structural_load(load_group="0", axes="LOCAL_COORDS", z=-2.0)
+        activity = self.get_activity(point)
+        assert activity.GlobalOrLocal == "GLOBAL_COORDS"
+        assert not activity.AppliedLoad.Name.endswith(" local")
+
+    def test_editing_a_load_changes_its_axes(self):
+        ifc, surface = self.make_item("IfcStructuralSurfaceMember")
+        bpy.ops.bim.apply_structural_load(load_group="0", axes="LOCAL_COORDS", z=-2.0)
+        activity = self.get_activity(surface)
+        case = str(ifcopenshell.util.structural.get_activity_load_cases(activity)[0].id())
+        bpy.ops.bim.edit_structural_load_values(
+            activity=activity.id(), load_group=case, initial_load_group=case, axes="GLOBAL_COORDS", z=-3.0
+        )
+        assert activity.GlobalOrLocal == "GLOBAL_COORDS"
+        assert activity.AppliedLoad.PlanarForceZ == -3.0
+        assert not activity.AppliedLoad.Name.endswith(" local")
+
+    def test_an_angle_in_local_axes(self):
+        # The calculator's angle and slope inputs give a force in a member's own axes as well as in global ones.
+        ifc, surface = self.make_item("IfcStructuralSurfaceMember", z_down=True)
+        bpy.ops.bim.apply_structural_load(
+            load_group="0", axes="LOCAL_COORDS", input_mode="ANGLE", magnitude=2.0, angle=30.0
+        )
+        activity = self.get_activity(surface)
+        assert activity.GlobalOrLocal == "LOCAL_COORDS"
+        # 30 degrees from +X towards +Z, in the member's axes, so not turned into the model's.
+        assert activity.AppliedLoad.PlanarForceX == pytest.approx(2.0 * math.cos(math.radians(30)))
+        assert activity.AppliedLoad.PlanarForceZ == pytest.approx(1.0)
+        assert activity.AppliedLoad.Name == "2 N/m2 at 30 deg local"
 
 
 class TestPlacingAPoint(NewFile):

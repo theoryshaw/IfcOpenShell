@@ -136,4 +136,5 @@ about it make. The result is a **moved load**:
   rewritten. It is meant for design, where loads change, not only for a one-off answer.
 - It is drawn with a dashed shaft and labelled **← LC_1**, after the load case it came from.
 - In the load lists it is dimmed and names its source. It is not meant to be edited by hand.
-- Removing it removes it from the record of moved loads too.
+- Removing it, or the load case it is in, removes it from the record of moved loads too, and removes
+  the load definition the move made, unless you have applied that definition somewhere else.

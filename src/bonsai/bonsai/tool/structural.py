@@ -1492,6 +1492,48 @@ class Structural(bonsai.core.tool.Structural):
                     entries[:] = kept
             if not changed:
                 break
+        cls.remove_orphaned_moved_loads(ifc_file, cases)
+
+    # The load definitions of moved loads at the last refresh, by id, with their names, and the file they are in.
+    moved_load_definitions: tuple[Union[ifcopenshell.file, None], dict[int, str]] = (None, {})
+
+    @classmethod
+    def remove_orphaned_moved_loads(
+        cls, ifc_file: ifcopenshell.file, cases: list[tuple[ifcopenshell.entity_instance, list[dict[str, str]]]]
+    ) -> None:
+        """Remove the load definitions Move Loads to Point made whose moved load has gone since the last refresh,
+        with its load case or by itself, unless something else now applies them. A load case removed takes its
+        record of moved loads with it, so they are remembered from one refresh to the next"""
+        current = {}
+        for _, entries in cases:
+            for entry in entries:
+                try:
+                    load = ifc_file.by_guid(entry["Activity"]).AppliedLoad
+                except RuntimeError:
+                    continue
+                if load:
+                    current[load.id()] = load.Name
+        previous_file, previous = cls.moved_load_definitions
+        cls.moved_load_definitions = (ifc_file, current)
+        if previous_file is not ifc_file:
+            return
+        removed = set()
+        for load_id, name in previous.items():
+            if load_id in current:
+                continue
+            try:
+                load = ifc_file.by_id(load_id)
+            except RuntimeError:
+                continue
+            # The same id, class and name: not another entity made since with an id freed by an undo.
+            if load.is_a("IfcStructuralLoad") and load.Name == name and not ifc_file.get_total_inverses(load):
+                ifcopenshell.api.structural.remove_structural_load(ifc_file, structural_load=load)
+                removed.add(load_id)
+        if removed:
+            loads = cls.get_structural_props().structural_loads
+            for i in reversed(range(len(loads))):
+                if loads[i].ifc_definition_id in removed:
+                    loads.remove(i)
 
     @classmethod
     def get_case_applied_moments(

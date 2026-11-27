@@ -1454,6 +1454,54 @@ class TestMovingLoadsToAPoint(NewFile):
         tool.Structural.refresh_moved_loads()
         assert tool.Structural.get_moved_loads(target) == []
 
+    def test_a_moved_load_case_removed_takes_its_load_definition(self):
+        ifc, model, case, points, loads = self.setup_roof()
+        bpy.ops.bim.move_structural_loads_to_point(load_case=case.id(), point=str(points["ROOF"].id()), target="NEW")
+        target, activity = self.get_moved(ifc, case)
+        load_id = activity.AppliedLoad.id()
+        bpy.ops.bim.remove_structural_load_case(load_case=target.id())
+        assert load_id not in {l.id() for l in ifc.by_type("IfcStructuralLoad")}
+        assert set(ifc.by_type("IfcStructuralLoad")) == set(loads.values())
+
+    def test_a_moved_load_removed_takes_its_load_definition(self):
+        ifc, model, case, points, _ = self.setup_roof()
+        bpy.ops.bim.move_structural_loads_to_point(load_case=case.id(), point=str(points["ROOF"].id()), target="NEW")
+        _, activity = self.get_moved(ifc, case)
+        load_id = activity.AppliedLoad.id()
+        bpy.ops.bim.remove_structural_activity(activity=activity.id())
+        assert load_id not in {l.id() for l in ifc.by_type("IfcStructuralLoad")}
+
+    def test_a_moved_load_definition_applied_elsewhere_is_kept(self):
+        ifc, model, case, points, _ = self.setup_roof()
+        bpy.ops.bim.move_structural_loads_to_point(load_case=case.id(), point=str(points["ROOF"].id()), target="NEW")
+        target, activity = self.get_moved(ifc, case)
+        load = activity.AppliedLoad
+        ifcopenshell.api.structural.add_structural_activity(
+            ifc, applied_load=load, structural_member=points["L"], ifc_class="IfcStructuralPointAction"
+        )
+        bpy.ops.bim.remove_structural_load_case(load_case=target.id())
+        assert load in ifc.by_type("IfcStructuralLoad")
+
+    def test_an_unused_load_definition_not_from_a_move_is_kept(self):
+        ifc, model, case, points, _ = self.setup_roof()
+        bpy.ops.bim.move_structural_loads_to_point(load_case=case.id(), point=str(points["ROOF"].id()), target="NEW")
+        target, _ = self.get_moved(ifc, case)
+        spare = ifcopenshell.api.structural.add_structural_load(
+            ifc, name="Spare", ifc_class="IfcStructuralLoadSingleForce"
+        )
+        bpy.ops.bim.remove_structural_load_case(load_case=target.id())
+        assert spare in ifc.by_type("IfcStructuralLoad")
+
+    def test_undoing_a_removed_moved_load_case_brings_back_its_load_definition(self):
+        ifc, model, case, points, _ = self.setup_roof()
+        bpy.ops.bim.move_structural_loads_to_point(load_case=case.id(), point=str(points["ROOF"].id()), target="NEW")
+        target, activity = self.get_moved(ifc, case)
+        load_id = activity.AppliedLoad.id()
+        bpy.ops.bim.remove_structural_load_case(load_case=target.id())
+        assert load_id not in {l.id() for l in ifc.by_type("IfcStructuralLoad")}
+        ifc.undo()
+        assert ifc.by_id(load_id).is_a("IfcStructuralLoadSingleForce")
+
     def test_moving_more_loads_into_the_same_load_case(self):
         ifc, model, case, points, _ = self.setup_roof()
         floor = ifcopenshell.api.structural.add_structural_load_case(ifc, name="On the column axis")

@@ -993,6 +993,56 @@ class TestPlacingAPoint(NewFile):
         # Written to the IFC, not only moved in Blender.
         assert c.ObjectPlacement.RelativePlacement.Location.Coordinates == pytest.approx((at.x, 0.0, at.z))
 
+    def setup_cables(self):
+        """Example 2.23: C hung from A by a cable down at 60 degrees, and from B, 2 to its right, at 30"""
+        ifc, b, c, c_obj = self.setup_points()
+        a, _ = self.add_point(ifc, "A", 0.0)
+        b_obj = tool.Ifc.get_object(b)
+        b_obj.location = (2.0, 0.0, 0.0)
+        bpy.context.view_layer.update()
+        return ifc, a, b, c, c_obj
+
+    def test_placing_where_two_lines_meet(self):
+        from bonsai.bim.module.structural.load_decoration_data import ShaderInfo
+
+        _, a, b, c, c_obj = self.setup_cables()
+        bpy.ops.bim.place_structural_point(
+            point_id=c.id(),
+            from_point=str(a.id()),
+            input_mode="ANGLE",
+            direction="Q8",
+            angle=60.0,
+            known="MEETS",
+            meet_point=str(b.id()),
+            meet_input_mode="ANGLE",
+            meet_direction="Q5",
+            meet_angle=30.0,
+        )
+        at = c_obj.matrix_world @ c_obj.data.vertices[0].co
+        # 1 along the cable from A and 1.73 along the one from B.
+        assert (at.x, at.y, at.z) == pytest.approx((0.5, 0.0, -math.sqrt(3) / 2))
+        assert c.ObjectPlacement.RelativePlacement.Location.Coordinates == pytest.approx((at.x, 0.0, at.z))
+        assert not ShaderInfo.guide_lines  # Drawn only while the dialog is open.
+
+    def test_lines_that_never_meet_ahead_of_both_points_place_nothing(self):
+        _, a, b, c, c_obj = self.setup_cables()
+        before = tuple(c_obj.matrix_world @ c_obj.data.vertices[0].co)
+        for direction, angle in (("Q8", 60.0), ("Q1", 30.0)):  # Parallel; and away from A's, meeting behind B.
+            with pytest.raises(RuntimeError, match="never meet"):
+                bpy.ops.bim.place_structural_point(
+                    point_id=c.id(),
+                    from_point=str(a.id()),
+                    input_mode="ANGLE",
+                    direction="Q8",
+                    angle=60.0,
+                    known="MEETS",
+                    meet_point=str(b.id()),
+                    meet_input_mode="ANGLE",
+                    meet_direction=direction,
+                    meet_angle=angle,
+                )
+        assert tuple(c_obj.matrix_world @ c_obj.data.vertices[0].co) == pytest.approx(before)
+
     def test_placing_by_components(self):
         _, b, c, c_obj = self.setup_points()
         bpy.ops.bim.place_structural_point(

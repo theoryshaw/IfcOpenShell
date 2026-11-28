@@ -105,9 +105,14 @@ coordinates. Select the point and click **Place Point** in its **Applied Loads**
   is entered.
 - **Length**, with **Angle** or **Slope**: the **Distance** along the direction, or follow the
   direction until a **Δx** or **Δz**, as along a member's slope up to a given height. **Measured From**
-  sets the point the Δx or Δz is measured from, which need not be the point placed from.
+  sets the point the Δx or Δz is measured from, which need not be the point placed from. Or follow
+  it until it **Meets a Line** from another point, chosen in **Meets Line From**, with that line's
+  own direction by angle or slope: as a weight hung from two cables, from A at 60° and from B at
+  30°, is where they meet. Lines that are parallel, or meet only behind one of the points, place
+  nothing, and the dialog says so.
 
-The point and its moments are previewed as you edit, and kept moments follow it.
+The point and its moments are previewed as you edit, and kept moments follow it. With **Meets a Line**,
+the two lines are drawn from their points to it while the dialog is open.
 
 Couples
 -------

@@ -182,6 +182,8 @@ class ScreenGrid:
 class ShaderInfo:
     # Values of a load being edited, by load id, shown in place of its own until the edit is confirmed or cancelled.
     preview: dict[int, dict[str, Union[float, None]]] = {}
+    # Lines a dialog draws while it is open, each from a start to an end, as Place Point's to where two lines meet.
+    guide_lines: list[tuple[np.ndarray, np.ndarray]] = []
     # A point's axes being edited, and the slope they are set by if any, by its id, shown in place of its own likewise.
     preview_axes: dict[int, tuple[np.ndarray, Union[tuple[float, float], None]]] = {}
     # The eighth Edit Resultant measures a resultant's angle in, by its item's id, shown in place of the chosen one.
@@ -249,6 +251,9 @@ class ShaderInfo:
         self.get_point_loads()
         if not self.also_shown:
             self.get_resultant_dimensions()
+            self.tag_new_entries(None)
+            for start, end in ShaderInfo.guide_lines if self.load_group is None else []:
+                self.add_dashed_line(start, end, max(float(np.linalg.norm(end - start)), 1e-6), (1, 0.6, 0.2, 1))
         self.get_planar_loads()
         if not self.also_shown:
             self.get_moments()

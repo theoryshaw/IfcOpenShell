@@ -4429,6 +4429,20 @@ def get_place_length_from_items(self: "PlaceStructuralPoint", context: bpy.types
     return PLACE_LENGTH_FROM_ITEMS
 
 
+# Items for the point Place Point's line to meet is drawn from, kept referenced as PLACE_FROM_ITEMS are.
+PLACE_MEET_ITEMS: list[tuple[str, str, str]] = []
+
+
+def get_place_meet_items(self: "PlaceStructuralPoint", context: bpy.types.Context) -> list:
+    """The points and the origin and cursor a line to meet may be drawn from: as From, but for the picked object"""
+    PLACE_MEET_ITEMS[:] = [
+        (key, name, description.replace("Place the point from", "Draw the line it meets from"))
+        for key, name, description in get_place_from_items(self, context)
+        if key != "OBJECT"
+    ]
+    return PLACE_MEET_ITEMS
+
+
 def has_point_vertex(obj: Union[bpy.types.Object, None]) -> bool:
     return bool(obj and obj.type == "MESH" and obj.data.vertices)
 
@@ -4467,6 +4481,14 @@ def get_known_axis(props: "PlaceStructuralPoint") -> Union[str, None]:
     return {"DX": "x", "DZ": "z"}.get(props.known)
 
 
+def get_meet_origin(props: "PlaceStructuralPoint") -> Union[Vector, None]:
+    """Where the line the point is placed on meeting is drawn from, if it has a vertex"""
+    try:
+        return get_place_reference(props.meet_point)
+    except (RuntimeError, ValueError, TypeError):
+        return None
+
+
 def get_length_origin(props: "PlaceStructuralPoint", origin: Vector) -> Union[Vector, None]:
     """Where the known Δx or Δz is measured from: From's point, or the point chosen for it"""
     if props.length_from == "SAME":
@@ -4497,6 +4519,27 @@ def get_place_offset(props: "PlaceStructuralPoint", origin: Vector) -> Union[tup
     )
     if props.known == "DISTANCE":
         return ux, uz
+    if props.known == "MEETS":
+        # Where origin + t u, along the direction, meets other + s v, along the line from the other point, ahead
+        # of both.
+        if (other := get_meet_origin(props)) is None:
+            return None
+        vx, vz = tool.Structural.get_in_plane_components(
+            props.meet_input_mode,
+            magnitude=1.0,
+            angle=props.meet_angle,
+            rise=props.meet_rise,
+            run=props.meet_run,
+            direction=props.meet_direction,
+        )
+        cross = ux * vz - uz * vx
+        if abs(cross) < 1e-9:
+            return None  # Parallel: they never meet.
+        wx, wz = other.x - origin.x, other.z - origin.z
+        t, s = (wx * vz - wz * vx) / cross, (wx * uz - wz * ux) / cross
+        if t <= 1e-9 or s <= 1e-9:
+            return None  # They meet behind one of the points, or at it.
+        return ux * t, uz * t
     if axis == "x":
         along, wanted = ux, length_origin.x + props.dx - origin.x
     else:
@@ -4511,6 +4554,9 @@ def get_typed_inputs(props: "PlaceStructuralPoint") -> tuple[str, ...]:
     if props.input_mode == "COMPONENTS":
         return ("dx", "dz")
     direction = ("direction", "angle") if props.input_mode == "ANGLE" else ("direction", "rise", "run")
+    if props.known == "MEETS":
+        meet = ("meet_angle",) if props.meet_input_mode == "ANGLE" else ("meet_rise", "meet_run")
+        return direction + ("meet_direction",) + meet
     return direction + {"DISTANCE": ("distance",), "DX": ("dx",), "DZ": ("dz",)}[props.known]
 
 
@@ -4534,8 +4580,21 @@ def put_placed_point(props: "PlaceStructuralPoint", context: bpy.types.Context) 
     MOMENT_CENTRE_PREVIEW.setdefault(point_obj.name, point_obj.matrix_world.translation.copy())
     point_obj.matrix_world.translation += Vector((origin.x + dx, at.y, origin.z + dz)) - at
     context.view_layer.update()
+    set_place_guides(props)
     ShaderInfo.preview = get_kept_moment_preview([tool.Ifc.get_entity(point_obj)])
     redraw_loads(context)
+
+
+def set_place_guides(props: "PlaceStructuralPoint") -> None:
+    """Draw the two lines a point placed where they meet lies on, from each point to it, while the dialog is open"""
+    ShaderInfo.guide_lines = []
+    point_obj, origin = get_place_objects(props)
+    if not point_obj or origin is None or props.input_mode == "COMPONENTS" or props.known != "MEETS":
+        return
+    at = get_vertex_location(point_obj)
+    if (other := get_meet_origin(props)) is not None:
+        for start in (origin, other):
+            ShaderInfo.guide_lines.append((np.array((start.x, at.y, start.z)), np.array(at)))
 
 
 def fill_place_inputs(props: "PlaceStructuralPoint", keep: tuple[str, ...] = ()) -> None:
@@ -4556,6 +4615,12 @@ def fill_place_inputs(props: "PlaceStructuralPoint", keep: tuple[str, ...] = ())
     if dx or dz:
         values["direction"], values["angle"], _, _ = tool.Structural.get_eighth(dx, dz)
         values["rise"], values["run"] = tool.Structural.get_simple_slope(abs(dx), abs(dz))
+    # The line it meets, from its point to where the point is.
+    if props.known == "MEETS" and (other := get_meet_origin(props)) is not None:
+        mx, mz = at.x - other.x, at.z - other.z
+        if mx or mz:
+            values["meet_direction"], values["meet_angle"], _, _ = tool.Structural.get_eighth(mx, mz)
+            values["meet_rise"], values["meet_run"] = tool.Structural.get_simple_slope(abs(mx), abs(mz))
     PLACE_FILLING[0] = True
     try:
         for name, value in values.items():
@@ -4575,12 +4640,14 @@ class PlaceStructuralPoint(
     bpy.types.Operator,
     tool.Ifc.Operator,
     get_direction_input("the point, from the one it is placed from,", move_placed_point, {"SKIP_SAVE"}),
+    get_direction_input("the line it meets, from that line's point,", move_placed_point, {"SKIP_SAVE"}, "meet_"),
 ):
     bl_idname = "bim.place_structural_point"
     bl_label = "Place Point"
     bl_description = (
         "Move the active structural point to a distance and direction from another point, as a force is entered, "
-        "along a direction until a Δx or Δz, or by Δx and Δz, previewing it and the moments"
+        "along a direction until a Δx or Δz or until it meets a line from another point, or by Δx and Δz, "
+        "previewing it and the moments"
     )
     bl_options = {"REGISTER", "UNDO"}
     point_id: bpy.props.IntProperty(options={"HIDDEN", "SKIP_SAVE"})
@@ -4613,8 +4680,28 @@ class PlaceStructuralPoint(
             ("DISTANCE", "Distance", "The distance along the direction"),
             ("DX", "Δx", "Follow the direction until this Δx, as along a member to a point above another"),
             ("DZ", "Δz", "Follow the direction until this Δz, as along a member's slope to a height"),
+            (
+                "MEETS",
+                "Meets a Line",
+                "Follow the direction until it meets a line from another point, as two cables meet at a weight",
+            ),
         ],
         default="DISTANCE",
+        update=refill_place_inputs,
+    )
+    meet_point: bpy.props.EnumProperty(
+        name="Meets Line From",
+        description="The point the line it meets is drawn from",
+        items=get_place_meet_items,
+        update=refill_place_inputs,
+    )
+    meet_input_mode: bpy.props.EnumProperty(
+        name="Line Input",
+        items=[
+            ("ANGLE", "Angle", "The line's direction by an angle, from its point towards this one"),
+            ("SLOPE", "Slope", "The line's direction by a rise over a run, from its point towards this one"),
+        ],
+        default="ANGLE",
         update=refill_place_inputs,
     )
     length_from: bpy.props.EnumProperty(
@@ -4643,6 +4730,10 @@ class PlaceStructuralPoint(
         self.from_point = PLACE_FROM_LAST[0] if PLACE_FROM_LAST[0] in ids else ids[min(1, len(ids) - 1)]
         get_place_length_from_items(self, context)
         self.length_from = "SAME"
+        # The line met drawn from the first point other than From, as from a second support.
+        meet_ids = [item[0] for item in get_place_meet_items(self, context) if item[0] not in ("ORIGIN", "CURSOR")]
+        if others := [i for i in meet_ids if i != self.from_point]:
+            self.meet_point = others[0]
         fill_place_inputs(self.properties)
         PLACE_DIALOG_OPEN[0] = True
         return context.window_manager.invoke_props_dialog(self)
@@ -4664,6 +4755,10 @@ class PlaceStructuralPoint(
         layout.row().prop(self, "known", expand=True)
         if self.known == "DISTANCE":
             layout.prop(self, "distance")
+        elif self.known == "MEETS":
+            layout.prop(self, "meet_point")
+            layout.row().prop(self, "meet_input_mode", expand=True)
+            self.draw_meet_direction_inputs(layout)
         else:
             row = layout.row(align=True)
             row.prop(self, "dx" if self.known == "DX" else "dz")
@@ -4671,7 +4766,12 @@ class PlaceStructuralPoint(
         _, origin = get_place_objects(self)
         offset = get_place_offset(self, origin) if origin is not None else None
         if offset is None:
-            layout.label(text="The direction never reaches that length", icon="ERROR")
+            row = layout.row()
+            row.alert = True
+            if self.known == "MEETS":
+                row.label(text="The lines never meet ahead of both points", icon="ERROR")
+            else:
+                row.label(text="The direction never reaches that length", icon="ERROR")
             return
         dx, dz = offset
         length_scale = ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get())
@@ -4683,6 +4783,7 @@ class PlaceStructuralPoint(
 
     def cancel(self, context):
         PLACE_DIALOG_OPEN[0] = False
+        ShaderInfo.guide_lines = []
         restore_moment_centre(context)
 
     def _execute(self, context):
@@ -4691,9 +4792,16 @@ class PlaceStructuralPoint(
         if not point_obj or origin is None:
             return {"CANCELLED"}
         if get_place_offset(self, origin) is None:
-            self.report({"ERROR"}, "The direction never reaches that length, or it is measured from a point with none")
+            ShaderInfo.guide_lines = []
+            if self.known == "MEETS" and self.input_mode != "COMPONENTS":
+                self.report({"ERROR"}, "The lines never meet ahead of both points")
+            else:
+                self.report(
+                    {"ERROR"}, "The direction never reaches that length, or it is measured from a point with none"
+                )
             return {"CANCELLED"}
         put_placed_point(self, context)  # Where the inputs say, as when run again from the last-operator panel.
+        ShaderInfo.guide_lines = []
         MOMENT_CENTRE_PREVIEW.clear()  # It stays where the preview left it.
         ShaderInfo.preview = {}  # A kept moment's unknown is written below.
         PLACE_FROM_LAST[0] = self.from_point

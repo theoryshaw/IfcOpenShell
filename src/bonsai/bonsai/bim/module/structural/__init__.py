@@ -63,6 +63,7 @@ classes = (
     operator.EditStructuralLoadCase,
     operator.DuplicateStructuralLoadCase,
     operator.MoveStructuralLoadsToPoint,
+    operator.RefreshMovedStructuralLoads,
     operator.RemoveStructuralLoadCase,
     operator.SetSelfWeightDownwards,
     operator.AddStructuralLoadGroup,
@@ -145,6 +146,8 @@ def register():
     bpy.types.Object.BIMStructuralProperties = bpy.props.PointerProperty(type=prop.BIMObjectStructuralProperties)
     # Kept moments' unknowns are written once a move is confirmed, in its undo step.
     OverrideMoveFinish.callbacks.append(operator.keep_moments_after_move)
+    # And moved loads follow a move, which is not an IFC operator, so their refresh below would not run after it.
+    OverrideMoveFinish.callbacks.append(operator.follow_moved_loads_after_move)
     # The calculator's state kept outside a load case follows it to a copy.
     operator.DuplicateStructuralLoadCase.callbacks.append(tool.Structural.copy_calculator_state)
     # Loads moved to a point follow the loads they were moved from, whatever changed them.
@@ -154,6 +157,8 @@ def register():
 def unregister():
     if operator.keep_moments_after_move in OverrideMoveFinish.callbacks:
         OverrideMoveFinish.callbacks.remove(operator.keep_moments_after_move)
+    if operator.follow_moved_loads_after_move in OverrideMoveFinish.callbacks:
+        OverrideMoveFinish.callbacks.remove(operator.follow_moved_loads_after_move)
     if tool.Structural.copy_calculator_state in operator.DuplicateStructuralLoadCase.callbacks:
         operator.DuplicateStructuralLoadCase.callbacks.remove(tool.Structural.copy_calculator_state)
     if tool.Structural.refresh_moved_loads in IfcStore.pre_commit_callbacks:

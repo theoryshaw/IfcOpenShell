@@ -1549,3 +1549,155 @@ class TestMovingLoadsToAPoint(NewFile):
         note = get_marks_note([moved.id(), shared.id()], marks)
         assert "moved load" in note and "circled number" in note
         assert get_marks_note([], marks) == ""
+
+    def setup_footing(self, at_b=-60.0, b_up=0.0):
+        """Example 2.22's combined footing: 20 down at A and 60 down 12 to its right, moments about A"""
+        bpy.ops.bim.create_project()  # With its collections, which a point added as Add Structural Item does needs.
+        ifc = tool.Ifc.get()
+        model = ifcopenshell.api.structural.add_structural_analysis_model(ifc)
+        case = ifcopenshell.api.structural.add_structural_load_case(ifc, name="Footing")
+        model.LoadedBy = [case]
+        points = {name: self.add_point(ifc, name, x, z) for name, x, z in (("A", 0.0, 0.0), ("B", 12.0, b_up))}
+        bpy.context.view_layer.update()
+        for name, value in (("A", -20.0), ("B", at_b)):
+            load = ifcopenshell.api.structural.add_structural_load(
+                ifc, name=f"{value} k", ifc_class="IfcStructuralLoadSingleForce"
+            )
+            load.ForceZ = value
+            activity = ifcopenshell.api.structural.add_structural_activity(
+                ifc, applied_load=load, structural_member=points[name], ifc_class="IfcStructuralPointAction"
+            )
+            ifcopenshell.api.group.assign_group(ifc, products=[activity], group=case)
+        bpy.ops.bim.set_structural_moment_centre(load_case=case.id(), point=str(points["A"].id()))
+        return ifc, case, points
+
+    def test_moving_loads_to_their_resultant_makes_one_force_with_no_couple(self):
+        ifc, case, points = self.setup_footing()
+        bpy.ops.bim.move_structural_loads_to_point(
+            load_case=case.id(), point=str(points["A"].id()), target="NEW", at_resultant=True, new_point_name="R"
+        )
+        target, activity = self.get_moved(ifc, case)
+        point = activity.AssignedToStructuralItem[0].RelatingElement
+        assert point not in points.values() and point.Name == "R"
+        obj = tool.Ifc.get_object(point)
+        # M_A = -60(12) = -720, R = -80: 9 to the right of A.
+        assert tuple(obj.matrix_world @ obj.data.vertices[0].co) == pytest.approx((9.0, 0.0, 0.0))
+        assert tool.Structural.get_force(activity.AppliedLoad) == pytest.approx((0.0, 0.0, -80.0))
+        assert (tool.Structural.get_applied_moment(activity.AppliedLoad) or 0.0) == pytest.approx(0.0, abs=1e-9)
+        assert tool.Structural.get_resultant_moves(case) == [(activity, points["A"])]
+
+    def test_on_a_sloping_footing_the_resultant_is_on_the_line_through_the_loads(self):
+        ifc, case, points = self.setup_footing(b_up=2.0)
+        offset, on_line = tool.Structural.get_resultant_placement(case, points["A"])
+        # Still 9 along, M_A = -720 and R = -80, and on the line from A up to B there: 2 x 9 / 12 = 1.5 up.
+        assert on_line and tuple(offset) == pytest.approx((9.0, 0.0, 1.5))
+
+    def test_off_one_line_the_resultant_is_at_its_nearest_to_the_point(self):
+        ifc, case, points = self.setup_footing()
+        extra = self.add_point(ifc, "C", 6.0, 3.0)
+        bpy.context.view_layer.update()
+        load = ifcopenshell.api.structural.add_structural_load(
+            ifc, name="0 k", ifc_class="IfcStructuralLoadSingleForce"
+        )
+        load.ForceZ = -10.0
+        activity = ifcopenshell.api.structural.add_structural_activity(
+            ifc, applied_load=load, structural_member=extra, ifc_class="IfcStructuralPointAction"
+        )
+        ifcopenshell.api.group.assign_group(ifc, products=[activity], group=case)
+        offset, on_line = tool.Structural.get_resultant_placement(case, points["A"])
+        # M_A = -720 - 60 = -780, R = -90: 8.67 along the level through A.
+        assert not on_line and tuple(offset) == pytest.approx((780 / 90, 0.0, 0.0))
+
+    def test_the_resultant_follows_its_loads_as_a_point_moves(self):
+        ifc, case, points = self.setup_footing()
+        bpy.ops.bim.move_structural_loads_to_point(
+            load_case=case.id(), point=str(points["A"].id()), target="NEW", at_resultant=True
+        )
+        _, activity = self.get_moved(ifc, case)
+        tool.Ifc.get_object(points["B"]).location.x = 16.0  # As a move would, then an IFC operator ends.
+        bpy.context.view_layer.update()
+        tool.Structural.refresh_moved_loads()
+        obj = tool.Ifc.get_object(activity.AssignedToStructuralItem[0].RelatingElement)
+        # M_A = -60(16) = -960, R = -80: 12 to the right of A, still with no couple.
+        assert tuple(obj.matrix_world @ obj.data.vertices[0].co) == pytest.approx((12.0, 0.0, 0.0))
+        assert (tool.Structural.get_applied_moment(activity.AppliedLoad) or 0.0) == pytest.approx(0.0, abs=1e-9)
+
+    def test_the_resultant_follows_once_a_move_is_confirmed(self):
+        from bonsai.bim.module.geometry.operator import OverrideMoveFinish
+        from bonsai.bim.module.structural.operator import follow_moved_loads_after_move
+
+        assert follow_moved_loads_after_move in OverrideMoveFinish.callbacks
+        ifc, case, points = self.setup_footing()
+        bpy.ops.bim.move_structural_loads_to_point(
+            load_case=case.id(), point=str(points["A"].id()), target="NEW", at_resultant=True
+        )
+        _, activity = self.get_moved(ifc, case)
+        b = tool.Ifc.get_object(points["B"])
+        b.location.x = 16.0  # Dragged with G, which is no IFC operator.
+        bpy.ops.object.select_all(action="DESELECT")
+        b.select_set(True)
+        bpy.context.view_layer.update()
+        bpy.ops.bim.override_move_finish()  # The step IFC Move runs once a move is confirmed.
+        obj = tool.Ifc.get_object(activity.AssignedToStructuralItem[0].RelatingElement)
+        assert tuple(obj.matrix_world @ obj.data.vertices[0].co) == pytest.approx((12.0, 0.0, 0.0))
+
+    def test_the_resultant_follows_a_move_by_the_gizmo_once_it_ends(self):
+        from bonsai.bim.module.structural.decorator import refresh_moved_loads_after_moves
+
+        ifc, case, points = self.setup_footing()
+        bpy.ops.bim.move_structural_loads_to_point(
+            load_case=case.id(), point=str(points["A"].id()), target="NEW", at_resultant=True
+        )
+        _, activity = self.get_moved(ifc, case)
+        assert not tool.Structural.are_moved_loads_stale()
+        tool.Ifc.get_object(points["B"]).location.x = 16.0  # Dragged with the gizmo: no IFC operator ends.
+        bpy.context.view_layer.update()
+        assert tool.Structural.are_moved_loads_stale()
+        assert refresh_moved_loads_after_moves() is None  # The timer, once no move is going on.
+        obj = tool.Ifc.get_object(activity.AssignedToStructuralItem[0].RelatingElement)
+        assert tuple(obj.matrix_world @ obj.data.vertices[0].co) == pytest.approx((12.0, 0.0, 0.0))
+        assert not tool.Structural.are_moved_loads_stale()  # So a later timer adds no empty undo step.
+
+    def test_the_resultant_is_dimensioned_from_the_loads_points(self):
+        from bonsai.bim.module.structural.load_decoration_data import ShaderInfo
+
+        ifc, case, points = self.setup_footing()
+        bpy.ops.bim.move_structural_loads_to_point(
+            load_case=case.id(), point=str(points["A"].id()), target="NEW", at_resultant=True
+        )
+        target, _ = self.get_moved(ifc, case)
+        with mock.patch("bonsai.bim.module.structural.load_decoration_data.DecorationShader"):
+            drawing = ShaderInfo(target)
+            drawing.update()
+        scale = ifcopenshell.util.unit.calculate_unit_scale(ifc)
+        texts = [t["text"] for t in drawing.text_info]
+        # A to R 9, R to B 3, and A to B 12 overall.
+        for length in (9.0, 3.0, 12.0):
+            assert f"{length / scale:.2f} {drawing.length_unit}" in texts
+        # None in the load case the loads were moved from.
+        with mock.patch("bonsai.bim.module.structural.load_decoration_data.DecorationShader"):
+            source = ShaderInfo(case)
+            source.update()
+        assert f"{3.0 / scale:.2f} {source.length_unit}" not in [t["text"] for t in source.text_info]
+
+    def test_the_report_finds_where_the_resultant_acts(self):
+        from bonsai.bim.module.structural.report import get_resultant_location_steps
+
+        ifc, case, points = self.setup_footing()
+        assert get_resultant_location_steps(case, points["A"], "M_{A}", -720.0, "k", " ft", "A") == []
+        bpy.ops.bim.move_structural_loads_to_point(
+            load_case=case.id(), point=str(points["A"].id()), target="NEW", at_resultant=True
+        )
+        steps = get_resultant_location_steps(case, points["A"], "M_{A}", -720.0, "k", " ft", "A")
+        assert any("R = R_{z} = -80.00" in step for step in steps)
+        assert any("\\Delta x = \\frac{M_{A}}{R_{z}}" in step and "9.00" in step for step in steps)
+
+    def test_a_couple_has_no_single_resultant(self):
+        ifc, case, points = self.setup_footing(at_b=20.0)  # 20 up at B against 20 down at A.
+        before = len(ifc.by_type("IfcStructuralPointConnection"))
+        assert tool.Structural.get_resultant_offset(case, points["A"]) is None
+        with pytest.raises(RuntimeError, match="no single resultant"):
+            bpy.ops.bim.move_structural_loads_to_point(
+                load_case=case.id(), point=str(points["A"].id()), target="NEW", at_resultant=True
+            )
+        assert len(ifc.by_type("IfcStructuralPointConnection")) == before

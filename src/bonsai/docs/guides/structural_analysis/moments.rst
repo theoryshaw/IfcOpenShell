@@ -138,3 +138,26 @@ about it make. The result is a **moved load**:
 - In the load lists it is dimmed and names its source. It is not meant to be edited by hand.
 - Removing it, or the load case it is in, removes it from the record of moved loads too, and removes
   the load definition the move made, unless you have applied that definition somewhere else.
+
+Where the resultant acts
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Loads at several points, such as two columns on a combined footing, can also be replaced by one
+force with no couple, acting where its moment about any point is theirs. Tick **Where the Couple Is
+Zero** in **Move Loads to Point**: the dialog shows where that is, as Δx and Δz from **To Point**,
+and the loads are moved to a new point there, named in **New Point**, on their resultant's line of
+action: where it crosses the line through the loads' points, if they lie on one, as along a footing
+or a beam, even a sloping one; or else at its nearest to To Point. The dialog says which.
+
+For a plumb resultant that is Δx = M/R\ :sub:`z` along the level through To Point, as for 20 k and
+60 k down 12 ft apart: M = −720 k-ft about the first, R = −80 k, so Δx = 9 ft. A level resultant is
+found up or down from it, and a sloping one square to its line of action.
+
+With its load case shown, a string of dimensions along the line square to the resultant gives where
+it is from each of the loads' points, with their overall length beyond, as 9.00 and 3.00 ft between
+the two columns, 12.00 ft apart.
+
+The new point follows: when a load changes or a point moves, it is moved back onto the resultant's
+line of action, measured again from To Point, so that the couple stays zero. Loads that add to no
+force, a couple, have no single resultant, and the dialog says so; if they come to that later, the
+point stays where it was.

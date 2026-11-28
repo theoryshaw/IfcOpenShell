@@ -1365,6 +1365,81 @@ class Structural(bonsai.core.tool.Structural):
         return force, cls.get_moment_about(case, point) or 0.0
 
     @classmethod
+    def get_resultant_offset(
+        cls, case: ifcopenshell.entity_instance, point: ifcopenshell.entity_instance
+    ) -> Union[np.ndarray, None]:
+        """Where a load case's point loads act as one force, with no couple, from a point, in Blender's length, or
+        None if they add to no force: see get_resultant_placement"""
+        return cls.get_resultant_placement(case, point)[0]
+
+    @classmethod
+    def get_resultant_placement(
+        cls, case: ifcopenshell.entity_instance, point: ifcopenshell.entity_instance
+    ) -> tuple[Union[np.ndarray, None], bool]:
+        """Where a load case's point loads act as one force, with no couple, on their resultant's line of action:
+        where it crosses the line through their points, if they lie on one, as along a footing or a beam, and else
+        at its nearest to a point. As the offset from that point in the X-Z plane, in Blender's length, or None if
+        they add to no force, and whether it is on the line through their points."""
+        force, moment = cls.get_equivalent_at(case, point)
+        square = force[0] ** 2 + force[2] ** 2
+        if square < 1e-18:
+            return None, False  # A couple, or nothing: no single force is equivalent.
+        # Its moment about the point, Δx Rz - Δz Rx, is theirs, M, along the line square to R through the point.
+        length_scale = ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get())
+        nearest = moment * length_scale * np.array((force[2], 0.0, -force[0])) / square
+        has_point = lambda obj: obj and obj.type == "MESH" and obj.data.vertices
+        if not has_point(origin_obj := tool.Ifc.get_object(point)):
+            return nearest, False
+        origin = np.array(origin_obj.matrix_world @ origin_obj.data.vertices[0].co, dtype=float)
+        locations = []
+        for item in cls.get_point_items(case):
+            if has_point(obj := tool.Ifc.get_object(item)) and any(
+                (load := a.AppliedLoad) and load.is_a("IfcStructuralLoadSingleForce")
+                for a in cls.get_chain_activities(item, case)
+            ):
+                locations.append(np.array(obj.matrix_world @ obj.data.vertices[0].co, dtype=float)[[0, 2]])
+        if len(locations) < 2:
+            return nearest, False
+        first = locations[0]
+        far = max(locations, key=lambda p: np.linalg.norm(p - first))
+        span = np.linalg.norm(far - first)
+        if span < 1e-9:
+            return nearest, False
+        along = (far - first) / span
+        across = np.array((-along[1], along[0]))
+        if any(abs(np.dot(p - first, across)) > 1e-6 * span for p in locations):
+            return nearest, False  # Not on one line.
+        direction = np.array((force[0], force[2])) / math.sqrt(square)
+        crossing = along[0] * direction[1] - along[1] * direction[0]
+        if abs(crossing) < 1e-9:
+            return nearest, False  # Along R's own direction: its line of action does not cross theirs.
+        # Where origin + nearest + s R crosses first + t along.
+        start = origin[[0, 2]] + nearest[[0, 2]]
+        s = ((first[0] - start[0]) * along[1] - (first[1] - start[1]) * along[0]) / (
+            direction[0] * along[1] - direction[1] * along[0]
+        )
+        at = start + s * direction
+        return np.array((at[0] - origin[0], 0.0, at[1] - origin[2])), True
+
+    @classmethod
+    def get_resultant_moves(
+        cls, case: ifcopenshell.entity_instance
+    ) -> list[tuple[ifcopenshell.entity_instance, ifcopenshell.entity_instance]]:
+        """The loads moved from a load case to their resultant's line of action, each as its applied load and the
+        point its offset was found from"""
+        ifc_file = tool.Ifc.get()
+        moves = []
+        for group in ifc_file.by_type("IfcStructuralLoadGroup"):
+            for entry in cls.get_moved_loads(group):
+                if entry["From"] != case.GlobalId or not entry.get("Nearest"):
+                    continue
+                try:
+                    moves.append((ifc_file.by_guid(entry["Activity"]), ifc_file.by_guid(entry["Nearest"])))
+                except RuntimeError:
+                    continue
+        return moves
+
+    @classmethod
     def get_moved_loads(cls, case: ifcopenshell.entity_instance) -> list[dict[str, str]]:
         """The loads moved into a load case from others, kept in step with them: each as its applied load's and
         its source load case's GlobalIds, Activity and From"""
@@ -1422,9 +1497,11 @@ class Structural(bonsai.core.tool.Structural):
         source: ifcopenshell.entity_instance,
         point: ifcopenshell.entity_instance,
         target: ifcopenshell.entity_instance,
+        nearest: Union[ifcopenshell.entity_instance, None] = None,
     ) -> ifcopenshell.entity_instance:
         """Add to a load case the equivalent at a point of another's point loads, a force and a couple, as one
-        applied load kept in step with them, and return it"""
+        applied load kept in step with them, and return it. nearest: the point it was placed on their resultant's
+        line of action from, if it was, where the couple is zero"""
         ifc_file = tool.Ifc.get()
         load = ifcopenshell.api.structural.add_structural_load(
             ifc_file,
@@ -1435,16 +1512,19 @@ class Structural(bonsai.core.tool.Structural):
             ifc_file, ifc_class="IfcStructuralPointAction", applied_load=load, structural_member=point
         )
         ifcopenshell.api.group.assign_group(ifc_file, products=[activity], group=target)
-        cls.set_moved_loads(
-            target, cls.get_moved_loads(target) + [{"Activity": activity.GlobalId, "From": source.GlobalId}]
-        )
+        entry = {"Activity": activity.GlobalId, "From": source.GlobalId}
+        if nearest:
+            entry["Nearest"] = nearest.GlobalId
+        cls.set_moved_loads(target, cls.get_moved_loads(target) + [entry])
         cls.write_moved_load(activity, source)
         return activity
 
     @classmethod
-    def write_moved_load(cls, activity: ifcopenshell.entity_instance, source: ifcopenshell.entity_instance) -> bool:
+    def write_moved_load(
+        cls, activity: ifcopenshell.entity_instance, source: ifcopenshell.entity_instance, dry_run: bool = False
+    ) -> bool:
         """Write a moved load's force and couple from its source load case's loads, if they changed, returning
-        whether they did"""
+        whether they did, or with dry_run only whether they would"""
         connects = activity.AssignedToStructuralItem
         if not connects or not (load := activity.AppliedLoad) or not load.is_a("IfcStructuralLoadSingleForce"):
             return False
@@ -1455,6 +1535,8 @@ class Structural(bonsai.core.tool.Structural):
         current = [getattr(load, a) or 0.0 for a in attributes]
         if np.allclose(current, [v or 0.0 for v in attributes.values()]):
             return False
+        if dry_run:
+            return True
         ifcopenshell.api.structural.edit_structural_load(tool.Ifc.get(), structural_load=load, attributes=attributes)
         return True
 
@@ -1486,6 +1568,8 @@ class Structural(bonsai.core.tool.Structural):
                         source = ifc_file.by_guid(entry["From"])
                     except RuntimeError:
                         continue
+                    if nearest := entry.get("Nearest"):
+                        changed |= cls.place_on_resultant(activity, source, nearest)
                     changed |= cls.write_moved_load(activity, source)
                 if len(kept) != len(entries):
                     cls.set_moved_loads(case, kept)
@@ -1493,6 +1577,61 @@ class Structural(bonsai.core.tool.Structural):
             if not changed:
                 break
         cls.remove_orphaned_moved_loads(ifc_file, cases)
+
+    @classmethod
+    def are_moved_loads_stale(cls) -> bool:
+        """Whether any moved load is out of step with the loads it was moved from, or off its resultant's line of
+        action if it was moved there, as after a move that ran no IFC operator to refresh them"""
+        ifc_file = tool.Ifc.get()
+        if not ifc_file or not hasattr(ifc_file, "schema") or ifc_file.schema == "IFC2X3":
+            return False
+        for case in ifc_file.by_type("IfcStructuralLoadGroup"):
+            for entry in cls.get_moved_loads(case):
+                try:
+                    activity, source = ifc_file.by_guid(entry["Activity"]), ifc_file.by_guid(entry["From"])
+                except RuntimeError:
+                    continue
+                if (nearest := entry.get("Nearest")) and cls.place_on_resultant(activity, source, nearest, True):
+                    return True
+                if cls.write_moved_load(activity, source, dry_run=True):
+                    return True
+        return False
+
+    @classmethod
+    def place_on_resultant(
+        cls,
+        activity: ifcopenshell.entity_instance,
+        source: ifcopenshell.entity_instance,
+        nearest: str,
+        dry_run: bool = False,
+    ) -> bool:
+        """Move the point of a load moved to its source's resultant back onto the resultant's line of action, at its
+        nearest to the point it was found from, where the couple is zero, if the loads or the points have moved it
+        off, returning whether it moved, or with dry_run only whether it would. Left where it is if that point has
+        gone, or the loads add to no force."""
+        import bonsai.core.geometry
+
+        ifc_file = tool.Ifc.get()
+        try:
+            origin = ifc_file.by_guid(nearest)
+        except RuntimeError:
+            return False
+        if not activity.AssignedToStructuralItem or (offset := cls.get_resultant_offset(source, origin)) is None:
+            return False
+        point = activity.AssignedToStructuralItem[0].RelatingElement
+        has_point = lambda obj: obj and obj.type == "MESH" and obj.data.vertices
+        if not has_point(obj := tool.Ifc.get_object(point)) or not has_point(origin_obj := tool.Ifc.get_object(origin)):
+            return False
+        at = obj.matrix_world @ obj.data.vertices[0].co
+        target = origin_obj.matrix_world @ origin_obj.data.vertices[0].co + Vector(offset)
+        if (target - at).length < 1e-9:
+            return False
+        if dry_run:
+            return True
+        obj.matrix_world.translation += target - at
+        bpy.context.view_layer.update()
+        bonsai.core.geometry.edit_object_placement(tool.Ifc, tool.Geometry, tool.Surveyor, obj=obj)
+        return True
 
     # The load definitions of moved loads at the last refresh, by id, with their names, and the file they are in.
     moved_load_definitions: tuple[Union[ifcopenshell.file, None], dict[int, str]] = (None, {})

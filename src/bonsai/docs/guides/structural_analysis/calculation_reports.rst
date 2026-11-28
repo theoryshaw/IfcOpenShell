@@ -65,6 +65,8 @@ A load case with a moment centre also gets a moments section:
 - The **steps**: each force's arm, found from Δx and Δz or by the right triangle, its moment
   as F d, and again by Varignon's theorem as F\ :sub:`z` Δx − F\ :sub:`x` Δz, then the sum
   ΣM. A sum kept with **Edit Resultant Moment** is followed by the steps that find its unknown.
+  If the loads were moved from the centre to where their resultant acts (see :doc:`moments`), the
+  steps then find where: Δx = ΣM/R\ :sub:`z` for a plumb resultant, as the book works it.
 
 Example
 -------

@@ -17,6 +17,7 @@
 # along with Bonsai.  If not, see <http://www.gnu.org/licenses/>.
 
 import math
+import traceback
 from collections.abc import Iterable
 from typing import Union
 
@@ -57,6 +58,9 @@ def update_loads_after_moves(scene: bpy.types.Scene, depsgraph: bpy.types.Depsgr
                 moved.append(element)
     if not moved:
         return
+    # Moved loads follow once the move ends: IFC Move refreshes them as it is confirmed, the gizmo and others don't.
+    if not bpy.app.timers.is_registered(refresh_moved_loads_after_moves):
+        bpy.app.timers.register(refresh_moved_loads_after_moves, first_interval=0.2)
     from bonsai.bim.module.structural.operator import (
         get_kept_moment_cases,
         get_kept_moment_preview,
@@ -73,6 +77,29 @@ def update_loads_after_moves(scene: bpy.types.Scene, depsgraph: bpy.types.Depsgr
             LoadsDecorator.redraw_properties()
     LoadsDecorator.update()
     tool.Blender.update_all_viewports()
+
+
+def is_moving() -> bool:
+    """Whether a move is still going on, as a transform or a gizmo being dragged"""
+    return any(
+        op.bl_idname.startswith(("TRANSFORM_OT_", "GIZMOGROUP_OT_"))
+        for window in bpy.context.window_manager.windows
+        for op in window.modal_operators
+    )
+
+
+def refresh_moved_loads_after_moves() -> Union[float, None]:
+    """Bring loads moved to a point into step once a structural item has been moved by other means than IFC Move,
+    such as the gizmo, which runs no IFC operator to refresh them: in an undo step of its own, and only if they
+    are out of step, as IFC Move will have refreshed them already"""
+    if is_moving():
+        return 0.2  # Asked again until the move ends.
+    if tool.Ifc.get() and tool.Structural.are_moved_loads_stale():
+        try:
+            bpy.ops.bim.refresh_moved_structural_loads()
+        except RuntimeError:
+            traceback.print_exc()
+    return None
 
 
 def show_loads(shown: bool) -> None:

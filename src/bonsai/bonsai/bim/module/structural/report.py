@@ -260,6 +260,7 @@ def get_moment_calculation(
     else:
         steps.append(f"{symbol} = M_{{1}} = {bold(f'{total:.2f}', True, text_unit)}")
     steps += get_kept_moment_steps(case, values, unknowns, text_unit, drawing.force_unit)
+    steps += get_resultant_location_steps(case, centre, symbol, total, drawing.force_unit, length_text, c)
     name = f"{get_slug(case.Name)}_moments_{centre.id()}.svg"
     has_diagram = write_diagram(drawing, centre, directory / "diagrams" / name, key=f"{centre_obj.name} moments")
     return {
@@ -283,6 +284,64 @@ def get_moment_calculation(
         "marks_note": get_marks_note(marked, marks),
         "length_unit": length_unit,
     }
+
+
+def get_resultant_location_steps(
+    case: ifcopenshell.entity_instance,
+    centre: ifcopenshell.entity_instance,
+    symbol: str,
+    total: float,
+    force_unit: str,
+    length_text: str,
+    c: str,
+) -> list[str]:
+    """Where the load case's resultant acts, as one force with no couple, if its loads were moved there from the
+    moment centre: R's moment about it must be theirs, so its distance from it is their moment over R"""
+    if not any(nearest == centre for _, nearest in tool.Structural.get_resultant_moves(case)):
+        return []
+    force, _ = tool.Structural.get_equivalent_at(case, centre)
+    rx, rz = force[0], force[2]
+    r = math.hypot(rx, rz)
+    if not r:
+        return []
+    force_text = r"\ \text{" + re.sub(r"([#$%&_{}])", r"\\\1", force_unit) + "}"
+    steps = [Lead(f"\\text{{The single resultant R acts where its moment about {c} is {symbol}:}}")]
+    if abs(rx) < 1e-9 * r:
+        dx = total / rz
+        steps.append(f"R = R_{{z}} = {rz:.2f}{force_text}")
+        steps.append(
+            f"{symbol} = R_{{z}}\\, \\Delta x \\quad\\Rightarrow\\quad \\Delta x = \\frac{{{symbol}}}{{R_{{z}}}}"
+            f" = \\frac{{{total:.2f}}}{{{rz:.2f}}} = {bold(f'{dx:.2f}', True, length_text)}"
+        )
+    elif abs(rz) < 1e-9 * r:
+        dz = -total / rx
+        steps.append(f"R = R_{{x}} = {rx:.2f}{force_text}")
+        steps.append(
+            f"{symbol} = -R_{{x}}\\, \\Delta z \\quad\\Rightarrow\\quad \\Delta z = -\\frac{{{symbol}}}{{R_{{x}}}}"
+            f" = -\\frac{{{total:.2f}}}{{{rx:.2f}}} = {bold(f'{dz:.2f}', True, length_text)}"
+        )
+    else:
+        d = abs(total) / r
+        dx, dz = total * rz / r**2, -total * rx / r**2
+        steps.append(
+            f"R = \\sqrt{{R_{{x}}^2 + R_{{z}}^2}} = \\sqrt{{({rx:.2f})^2 + ({rz:.2f})^2}} = {r:.2f}{force_text}"
+        )
+        steps.append(
+            f"d = \\frac{{|{symbol}|}}{{R}} = \\frac{{{abs(total):.2f}}}{{{r:.2f}}} = {bold(f'{d:.2f}', True, length_text)}"
+        )
+        steps.append(
+            f"\\Delta x = \\frac{{{symbol}\\, R_{{z}}}}{{R^2}} = {dx:.2f}{length_text},\\quad "
+            f"\\Delta z = -\\frac{{{symbol}\\, R_{{x}}}}{{R^2}} = {dz:.2f}{length_text}"
+        )
+    # Where its line of action crosses the line through the loads' points, if they lie on one, as R is placed.
+    offset, on_line = tool.Structural.get_resultant_placement(case, centre)
+    if on_line and offset is not None:
+        x, z = offset[[0, 2]] / ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get())
+        steps.append(
+            f"\\text{{On the line through the loads' points: }} \\Delta x = {x:.2f}{length_text},\\quad "
+            f"\\Delta z = {z:.2f}{length_text}"
+        )
+    return steps
 
 
 def get_kept_moment_steps(

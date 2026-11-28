@@ -247,6 +247,8 @@ class ShaderInfo:
         )
         self.get_linear_loads()
         self.get_point_loads()
+        if not self.also_shown:
+            self.get_resultant_dimensions()
         self.get_planar_loads()
         if not self.also_shown:
             self.get_moments()
@@ -433,6 +435,81 @@ class ShaderInfo:
             return True
         load = activity.AppliedLoad
         return bool(load) and self.only_load in [load] + list(getattr(load, "Values", None) or [])
+
+    def get_resultant_dimensions(self) -> None:
+        """Dimension where loads moved to their resultant act, from the points of the loads they were moved from:
+        a string of dimensions along the line square to the resultant, through each of those points and its own,
+        and their overall length beyond it, on the side away from the arrows, as a text's figure gives them"""
+        props = tool.Structural.get_structural_props()
+        ifc_file = tool.Ifc.get()
+        try:
+            group = self.load_group or ifc_file.by_id(int(props.load_group_to_show))
+        except (ValueError, RuntimeError):
+            return
+        if not group.is_a("IfcStructuralLoadGroup"):
+            return
+        has_point = lambda obj: obj and obj.type == "MESH" and obj.data.vertices
+        location = lambda obj: np.array(obj.matrix_world @ obj.data.vertices[0].co, dtype=float)
+        length_scale = ifcopenshell.util.unit.calculate_unit_scale(ifc_file)
+        color = (0.85, 0.85, 0.85, 1)
+        for entry in tool.Structural.get_moved_loads(group):
+            if not entry.get("Nearest"):
+                continue
+            try:
+                activity, source = ifc_file.by_guid(entry["Activity"]), ifc_file.by_guid(entry["From"])
+            except RuntimeError:
+                continue
+            if not activity.AssignedToStructuralItem or not (load := activity.AppliedLoad):
+                continue
+            force = np.array(tool.Structural.get_force(load), dtype=float)
+            if not (length := math.hypot(force[0], force[2])):
+                continue
+            point = activity.AssignedToStructuralItem[0].RelatingElement
+            if not has_point(point_obj := tool.Ifc.get_object(point)):
+                continue
+            locations = [location(point_obj)] + [
+                location(obj)
+                for item in tool.Structural.get_point_items(source)
+                if has_point(obj := tool.Ifc.get_object(item))
+            ]
+            down = np.array((force[0], 0.0, force[2])) / length
+            # Along the line square to R, left to right or bottom to top, through the points' positions along it.
+            along = np.array((-down[2], 0.0, down[0]))
+            if along[0] < -1e-9 or (abs(along[0]) < 1e-9 and along[2] < 0):
+                along = -along
+            origin = locations[0]
+            positions = sorted({round(float(np.dot(p - origin, along)), 9) for p in locations})
+            if len(positions) < 2:
+                continue
+            span = positions[-1] - positions[0]
+            size, tick = 0.3 * span, 0.01 * span
+            # Beyond every point, away from the arrows, which point along R from their points.
+            beyond = max(float(np.dot(p - origin, -down)) for p in locations) + 0.15 * span
+            self.tag_new_entries(point_obj)
+            for k, rows in enumerate(([positions], [[positions[0], positions[-1]]] if len(positions) > 2 else [])):
+                for row in rows:
+                    offset = beyond + 0.12 * span * k
+                    for a_at, b_at in zip(row, row[1:]):
+                        a = origin + along * a_at - down * offset
+                        b = origin + along * b_at - down * offset
+                        self.add_dashed_line(a, b, size, color, dashed=False)
+                        for end in (a, b):
+                            self.add_dashed_line(
+                                end - (along - down) * tick, end + (along - down) * tick, size, color, dashed=False
+                            )
+                        self.text_info.append(
+                            {
+                                "position": (a + b) / 2,
+                                "text": f"{(b_at - a_at) / length_scale:.2f} {self.length_unit}",
+                                "color": color,
+                                "away": -down,
+                            }
+                        )
+            for p in locations:  # Extension lines, from each point out to the dimensions.
+                at = float(np.dot(p - origin, along))
+                self.add_dashed_line(
+                    p, origin + along * at - down * (beyond + (0.12 * span if len(positions) > 2 else 0)), size, color
+                )
 
     def tag_new_entries(self, obj: Union[bpy.types.Object, None]) -> None:
         """Mark the drawing data added so far without an item as belonging to the item just drawn.

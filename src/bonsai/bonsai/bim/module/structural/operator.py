@@ -3269,9 +3269,20 @@ class MoveStructuralLoadsToPoint(bpy.types.Operator, tool.Ifc.Operator):
     point: bpy.props.EnumProperty(name="To Point", items=get_move_point_items)
     target: bpy.props.EnumProperty(name="Into", items=get_move_target_items)
     new_load_case_name: bpy.props.StringProperty(name="New Load Case")
+    at_resultant: bpy.props.BoolProperty(
+        name="Where the Couple Is Zero",
+        description=(
+            "Move them instead to a new point on their resultant's line of action, where they are one force with no "
+            "couple: where it crosses the line through their points, if they lie on one, or else nearest To Point"
+        ),
+        default=False,
+        options={"SKIP_SAVE"},
+    )
+    new_point_name: bpy.props.StringProperty(name="New Point")
 
     def invoke(self, context, event):
         source = tool.Ifc.get().by_id(self.load_case)
+        self.new_point_name = f"R of {source.Name or 'Unnamed'}"
         # The point moments are taken about, as a level's axis is in Example 2.21's, if any.
         if (centre := tool.Structural.get_moment_centre(source)) and str(centre.id()) in [
             item[0] for item in get_move_point_items(self, context)
@@ -3297,6 +3308,26 @@ class MoveStructuralLoadsToPoint(bpy.types.Operator, tool.Ifc.Operator):
             text=f"R: X = {force[0]:.2f}   Z = {force[2]:.2f} {unit},   M = {moment:+.2f} {get_moment_unit_symbol()}",
             icon="FORCE_FORCE",
         )
+        layout.prop(self, "at_resultant")
+        if self.at_resultant:
+            layout.prop(self, "new_point_name")
+            offset, on_line = tool.Structural.get_resultant_placement(source, point)
+            if offset is None:
+                row = layout.row()
+                row.alert = True
+                row.label(text="They add to no force: a couple has no single resultant", icon="ERROR")
+            else:
+                ifc_file = tool.Ifc.get()
+                length_unit = ifcopenshell.util.unit.get_project_unit(ifc_file, "LENGTHUNIT")
+                length = ifcopenshell.util.unit.get_unit_symbol(length_unit) if length_unit else "m"
+                offset = offset / ifcopenshell.util.unit.calculate_unit_scale(ifc_file)
+                layout.label(
+                    text=f"At Δx = {offset[0]:.2f}   Δz = {offset[2]:.2f} {length} from {point.Name or 'Unnamed'}",
+                    icon="EMPTY_SINGLE_ARROW",
+                )
+                layout.label(
+                    text="On the line through the loads' points" if on_line else f"Nearest {point.Name or 'Unnamed'}"
+                )
         layout.label(text="It follows the load case's loads as they change", icon="FILE_REFRESH")
 
     def _execute(self, context):
@@ -3317,9 +3348,64 @@ class MoveStructuralLoadsToPoint(bpy.types.Operator, tool.Ifc.Operator):
                 )
         else:
             target = ifc_file.by_id(int(self.target))
-        tool.Structural.move_loads_to_point(source, point, target)
+        nearest = None
+        if self.at_resultant:
+            if (offset := tool.Structural.get_resultant_offset(source, point)) is None:
+                self.report({"ERROR"}, "The loads add to no force: a couple has no single resultant")
+                return {"CANCELLED"}
+            obj = tool.Ifc.get_object(point)
+            location = Vector(obj.matrix_world @ obj.data.vertices[0].co) + Vector(offset)
+            nearest, point = point, add_structural_point(context, self.new_point_name, location)
+            if not point:
+                self.report({"ERROR"}, "The new point could not be added")
+                return {"CANCELLED"}
+        tool.Structural.move_loads_to_point(source, point, target, nearest)
         redraw_loads(context)
         return {"FINISHED"}
+
+
+class RefreshMovedStructuralLoads(bpy.types.Operator, tool.Ifc.Operator):
+    bl_idname = "bim.refresh_moved_structural_loads"
+    bl_label = "Refresh Moved Loads"
+    bl_description = "Bring loads moved to a point into step with the loads they were moved from"
+    bl_options = {"REGISTER", "UNDO", "INTERNAL"}
+
+    def _execute(self, context):
+        return {"FINISHED"}  # The refresh is IfcStore's pre-commit callback, run as any IFC operator ends.
+
+
+def follow_moved_loads_after_move(context: bpy.types.Context) -> None:
+    """Bring moved loads into step once a move is confirmed, in its undo step, as a move is no IFC operator"""
+    ifc_file = tool.Ifc.get()
+    if ifc_file and any(tool.Structural.get_moved_loads(g) for g in ifc_file.by_type("IfcStructuralLoadGroup")):
+        bpy.ops.bim.refresh_moved_structural_loads()
+
+
+def add_structural_point(
+    context: bpy.types.Context, name: str, location: Vector
+) -> Union[ifcopenshell.entity_instance, None]:
+    """Add a point connection at a location, in the current structural analysis model, as Add Structural Item
+    adds one at the 3D cursor"""
+    rprops = tool.Root.get_root_props()
+    cursor = context.scene.cursor.location.copy()
+    context.scene.cursor.location = location
+    rprops.ifc_product = "IfcStructuralItem"
+    rprops.ifc_class = "IfcStructuralPointConnection"
+    rprops.representation_template = tool.Structural.get_structural_item_representation_template(
+        "IfcStructuralPointConnection"
+    )
+    rprops.name = name
+    rprops.description = ""
+    try:
+        result = bpy.ops.bim.add_element(skip_dialog=True)
+    finally:
+        context.scene.cursor.location = cursor
+    if "FINISHED" not in result or not (obj := context.active_object):
+        return None
+    for collection in obj.users_collection:
+        if layer_collection := tool.Blender.get_layer_collection(collection):
+            layer_collection.hide_viewport = False  # Hidden by default, as structural items are: shown, as added.
+    return tool.Ifc.get_entity(obj)
 
 
 # Where a moment centre was before Edit Moment Centre moved it to preview, by its object's name, to put it back.

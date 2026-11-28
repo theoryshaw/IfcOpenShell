@@ -286,6 +286,18 @@ class Structural(bonsai.core.tool.Structural):
             cls.edit_bbim_structural(activity, {"MagnitudeLocked": magnitude, "DirectionLocked": direction})
 
     @classmethod
+    def get_capacity(cls, activity: ifcopenshell.entity_instance) -> Union[float, None]:
+        """The most an applied load's force may be, as a cable's safe tension, in the project's force unit, if set"""
+        value = ifcopenshell.util.element.get_pset(activity, "BBIM_Structural", "Capacity")
+        return float(value) if isinstance(value, (int, float)) and value > 0 else None
+
+    @classmethod
+    def set_capacity(cls, activity: ifcopenshell.entity_instance, capacity: Union[float, None]) -> None:
+        capacity = float(capacity) if capacity and capacity > 0 else None
+        if capacity != cls.get_capacity(activity):
+            cls.edit_bbim_structural(activity, {"Capacity": capacity})
+
+    @classmethod
     def get_known_component(cls, activity: ifcopenshell.entity_instance) -> Union[str, None]:
         """Which component of an applied load is known, X or Z, its magnitude following from it and its direction"""
         component = ifcopenshell.util.element.get_pset(activity, "BBIM_Structural", "KnownComponent")
@@ -524,10 +536,13 @@ class Structural(bonsai.core.tool.Structural):
         magnitude_locked: bool,
         direction_locked: bool,
         force: tuple[float, float, float],
+        maximise: Union[str, None] = None,
     ) -> None:
         """Keep a resultant locked at an item for a load case, so that solving keeps it so, or forget it if unlocked.
 
         A resultant is no IFC entity, so it is kept on the item, by load case GlobalId.
+
+        :param maximise: The GlobalId of the applied load made as large as the capacities allow, if one is.
         """
         resultants = cls.get_resultants(item)
         if magnitude_locked or direction_locked:
@@ -536,6 +551,8 @@ class Structural(bonsai.core.tool.Structural):
                 "DirectionLocked": direction_locked,
                 "Force": [float(c) for c in force],
             }
+            if maximise:
+                resultants[load_case.GlobalId]["Maximise"] = maximise
         elif load_case.GlobalId not in resultants:
             return
         else:
@@ -967,6 +984,66 @@ class Structural(bonsai.core.tool.Structural):
         forces[i] = tuple(magnitudes[0] * c for c in direction)
         forces[j] = tuple(magnitudes[1] * c for c in unit(forces[j]))
         return forces, resultant, ""
+
+    @classmethod
+    def solve_maximised(
+        cls,
+        forces: list[tuple[float, float, float]],
+        locks: list[tuple[bool, bool]],
+        resultant: tuple[float, float, float],
+        resultant_locks: tuple[bool, bool],
+        maximise: int,
+        capacities: list[Union[float, None]],
+        links: Union[list[Union[str, None]], None] = None,
+        factors: Union[list[float], None] = None,
+    ) -> tuple[Union[list[tuple[float, float, float]], None], Union[tuple[float, float, float], None], str]:
+        """solve_unknowns with one more unknown magnitude, the force maximise, made as large as the capacities let
+        it: as the most weight two cables of a given safe tension can hold.
+
+        Each other unknown follows it in proportion, as a + b W, so solving with it at 0 and at 1 gives them; each
+        capacity then bounds W, and the least of those bounds is the answer, the force at its capacity governing.
+
+        :param capacities: The most each force may be, in magnitude, or None for no limit.
+        """
+        unit = lambda v: tuple(c / math.hypot(*v) for c in v) if math.hypot(*v) else None
+        if locks[maximise][0]:
+            return None, None, "The force to make largest needs its magnitude unknown"
+        if not locks[maximise][1] or not (along := unit(forces[maximise])):
+            return None, None, "The force to make largest needs a known direction"
+
+        def solve_at(w: float):
+            trial, trial_locks = list(forces), list(locks)
+            trial[maximise], trial_locks[maximise] = tuple(w * c for c in along), (True, True)
+            return cls.solve_unknowns(trial, trial_locks, resultant, resultant_locks, links, factors)
+
+        at_0, _, error = solve_at(0.0)
+        if error:
+            return None, None, error
+        at_1, _, error = solve_at(1.0)
+        if error:
+            return None, None, error
+        low, high = 0.0, math.inf
+        for j, capacity in enumerate(capacities):
+            if not capacity:
+                continue
+            if j == maximise:
+                a, b = 0.0, 1.0
+            else:
+                # Along its own direction, so that a force reversing counts against its capacity too.
+                direction = unit(forces[j]) or unit(at_1[j]) or (1.0, 0.0, 0.0)
+                a = sum(p * q for p, q in zip(at_0[j], direction))
+                b = sum(p * q for p, q in zip(at_1[j], direction)) - a
+            if abs(b) < 1e-12:
+                if abs(a) > capacity * (1 + 1e-9):
+                    return None, None, f"F{j + 1} is beyond its capacity whatever the load"
+                continue
+            ends = sorted(((-capacity - a) / b, (capacity - a) / b))
+            low, high = max(low, ends[0]), min(high, ends[1])
+        if high == math.inf:
+            return None, None, "Nothing limits it: give a force that grows with it a capacity"
+        if high < low - 1e-9:
+            return None, None, "No load keeps every force within its capacity"
+        return solve_at(high)
 
     @classmethod
     def get_eighth(cls, x: float, z: float, preferred: Union[str, None] = None) -> tuple[str, float, float, float]:

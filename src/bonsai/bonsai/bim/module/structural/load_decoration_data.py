@@ -1899,7 +1899,13 @@ class ShaderInfo:
         magnitude, direction = tool.Structural.get_locks(element)
         # A magnitude following from a known component is found too.
         magnitude = magnitude and not tool.Structural.get_known_component(element)
-        return ("" if magnitude else " 🔓"), ("" if direction else " 🔓")
+        size_mark = "" if magnitude else " 🔓"
+        # At its capacity, as the cable that governs the most a pair can hold.
+        capacity = tool.Structural.get_capacity(element)
+        if capacity and (load := element.AppliedLoad) and load.is_a("IfcStructuralLoadSingleForce"):
+            if abs(math.hypot(*tool.Structural.get_force(load)) - capacity) <= 1e-6 * capacity:
+                size_mark += " = capacity"
+        return size_mark, ("" if direction else " 🔓")
 
     def get_resultant_marks(self, activities: list[int]) -> tuple[str, str]:
         """Marks for a resultant's magnitude and direction labels, if they were found: a single force's own, or what

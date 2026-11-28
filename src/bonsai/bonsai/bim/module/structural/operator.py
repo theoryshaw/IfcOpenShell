@@ -1832,12 +1832,16 @@ def solve_factored(
     resultant: tuple,
     resultant_locks: tuple[bool, bool],
     links: Union[dict[str, Any], None] = None,
+    maximise: Union[int, None] = None,
+    capacities: Union[list[Union[float, None]], None] = None,
 ) -> tuple[Union[list[tuple], None], Union[tuple, None], str]:
     """Solve the unknowns of applied loads in the forces drawn, each load times its factor in its load case, and
     give the loads' own values back: a load group's Coefficient, or a factor it is assigned by, scales what is
     drawn, so the resultant set is of the scaled forces.
 
     :param values: The loads' own forces, unscaled.
+    :param maximise: The index of a load to make as large as the capacities allow, if one is.
+    :param capacities: The most each load's own force may be, or None for no limit.
     :return: The loads' own forces with the unknowns found, the resultant, and why not if they cannot be.
     """
     multipliers = get_activity_factors(activities)
@@ -1848,9 +1852,22 @@ def solve_factored(
         # Linked as the loads' own magnitudes are, so as the drawn ones are, each times its own factor.
         link_factors = [f * m for f, m in zip(link_factors, multipliers)]
     scale = lambda force, k: tuple(c * k for c in force)
-    solved, resultant, error = tool.Structural.solve_unknowns(
-        [scale(v, m) for v, m in zip(values, multipliers)], locks, resultant, resultant_locks, groups, link_factors
-    )
+    if maximise is not None:
+        solved, resultant, error = tool.Structural.solve_maximised(
+            [scale(v, m) for v, m in zip(values, multipliers)],
+            locks,
+            resultant,
+            resultant_locks,
+            maximise,
+            # A load's own capacity, as drawn, times its factor.
+            [c * abs(m) if c else None for c, m in zip(capacities or [None] * len(values), multipliers)],
+            groups,
+            link_factors,
+        )
+    else:
+        solved, resultant, error = tool.Structural.solve_unknowns(
+            [scale(v, m) for v, m in zip(values, multipliers)], locks, resultant, resultant_locks, groups, link_factors
+        )
     if error:
         return None, None, error
     return [scale(f, 1 / m) if m else tuple(v) for f, v, m in zip(solved, values, multipliers)], resultant, ""
@@ -1885,6 +1902,8 @@ def get_resolved_forces(
         get_solving_force(a.AppliedLoad, (forces or {}).get(a.id(), get_force(a.AppliedLoad)), lock)
         for a, lock in zip(activities, lock_values)
     ]
+    ids = [a.GlobalId for a in activities]
+    maximise = ids.index(resultant["Maximise"]) if resultant.get("Maximise") in ids else None
     solved, _, error = solve_factored(
         activities,
         values,
@@ -1892,6 +1911,8 @@ def get_resolved_forces(
         tuple(resultant["Force"]),
         (resultant["MagnitudeLocked"], resultant["DirectionLocked"]),
         links,
+        maximise,
+        [tool.Structural.get_capacity(a) for a in activities],
     )
     if error:
         return None, error
@@ -1993,16 +2014,37 @@ def solve_resultant(
             direction=props.direction,
         )
         resultant = (x, 0.0, z)
+    maximise = int(props.maximise) - 1 if props.maximise not in ("", "NONE") else None
     forces, resultant, error = solve_factored(
         activities[: len(loads)],
         [get_solving_force(load, get_force(load), lock) for load, lock in zip(loads, locks)],
         locks,
         resultant,
         (props.magnitude_locked, props.direction_locked),
+        maximise=maximise if maximise is not None and maximise < len(loads) else None,
+        capacities=[props.capacities[i] or None for i in range(len(loads))],
     )
     if error:
         return None, None, error
     return {a: force for a, force, lock in zip(activities, forces, locks) if not all(lock)}, resultant, ""
+
+
+# Items for Edit Resultant's Make Largest, kept referenced while its dialog is open, as Blender requires.
+MAXIMISE_ITEMS: list[tuple[str, str, str]] = []
+
+
+def get_maximise_items(self: "EditStructuralResultant", context: bpy.types.Context) -> list:
+    """No force, or one of the forces, by number as the dialog numbers them, to make as large as capacities allow"""
+    subscripts = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+    MAXIMISE_ITEMS[:] = [("NONE", "None", "Find two unknowns, as usual")] + [
+        (
+            str(i + 1),
+            f"F{str(i + 1).translate(subscripts)}: {activity.AppliedLoad.Name or 'Unnamed'}",
+            "Make this force as large as the capacities allow, its magnitude a third unknown",
+        )
+        for i, activity in enumerate(get_resultant_activities(self)[:32])
+    ]
+    return MAXIMISE_ITEMS
 
 
 def get_resultant_item_and_load_case(
@@ -3069,6 +3111,24 @@ class EditStructuralResultant(bpy.types.Operator, tool.Ifc.Operator, StructuralF
         options={"SKIP_SAVE"},
         update=update_force_inputs,
     )
+    capacities: bpy.props.FloatVectorProperty(
+        name="Capacity",
+        description="The most this force may be, as a cable's safe tension; 0 for no limit",
+        size=32,
+        min=0.0,
+        options={"SKIP_SAVE"},
+        update=update_force_inputs,
+    )
+    maximise: bpy.props.EnumProperty(
+        name="Make Largest",
+        description=(
+            "A force whose magnitude is unknown to make as large as the capacities allow, as the most weight two "
+            "cables can hold: a third unknown, the force at its capacity governing"
+        ),
+        items=get_maximise_items,
+        options={"SKIP_SAVE"},
+        update=update_force_inputs,
+    )
     is_previewing: bpy.props.BoolProperty(options={"HIDDEN", "SKIP_SAVE"})
     # The eighth the angle was last measured in, to tell a click on the other eighth of its quadrant.
     measured_direction: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
@@ -3099,6 +3159,12 @@ class EditStructuralResultant(bpy.types.Operator, tool.Ifc.Operator, StructuralF
         locks = [tool.Structural.get_locks(activity) for activity in activities[:32]]
         self.magnitude_locks = [lock[0] for lock in locks] + [True] * (32 - len(locks))
         self.direction_locks = [lock[1] for lock in locks] + [True] * (32 - len(locks))
+        capacities = [tool.Structural.get_capacity(activity) or 0.0 for activity in activities[:32]]
+        self.capacities = capacities + [0.0] * (32 - len(capacities))
+        get_maximise_items(self, context)
+        kept = self.get_locked_resultant() or {}
+        ids = [activity.GlobalId for activity in activities[:32]]
+        self.maximise = str(ids.index(kept["Maximise"]) + 1) if kept.get("Maximise") in ids else "NONE"
         if resultant := self.get_locked_resultant():
             self.magnitude_locked, self.direction_locked = resultant["MagnitudeLocked"], resultant["DirectionLocked"]
         else:
@@ -3106,7 +3172,7 @@ class EditStructuralResultant(bpy.types.Operator, tool.Ifc.Operator, StructuralF
             unlocked = sum(not locked for lock in locks for locked in lock)
             self.magnitude_locked, self.direction_locked = unlocked >= 2, unlocked >= 1
         self.is_previewing = True  # Set last, so that filling in the values above does not start a preview.
-        return context.window_manager.invoke_props_dialog(self, width=380)
+        return context.window_manager.invoke_props_dialog(self, width=460)
 
     def draw(self, context):
         layout = self.layout
@@ -3123,11 +3189,20 @@ class EditStructuralResultant(bpy.types.Operator, tool.Ifc.Operator, StructuralF
             for prop, text in (("magnitude_locks", "Magnitude"), ("direction_locks", "Direction")):
                 locked = getattr(self, prop)[i]
                 row.prop(self, prop, index=i, text=text, icon="LOCKED" if locked else "UNLOCKED")
+            row.prop(self, "capacities", index=i, text="Capacity")
+        layout.prop(self, "maximise")
         forces, resultant, error = solve_resultant(self)
         if error:
             layout.label(text=error, icon="ERROR")
             return
         box = layout.box()
+        for i, activity in enumerate(activities[:32]):
+            capacity = self.capacities[i]
+            size = math.hypot(*forces.get(activity, get_force(activity.AppliedLoad)))
+            if capacity and abs(size - capacity) <= 1e-6 * capacity:
+                box.label(
+                    text=f"{activity.AppliedLoad.Name or 'Unnamed'} reaches its capacity: it governs", icon="PINNED"
+                )
         if not (self.magnitude_locked and self.direction_locked):
             box.label(text=f"Resultant: {get_force_name(resultant, unit)}", icon="FORCE_FORCE")
         for activity, force in forces.items():
@@ -3153,11 +3228,17 @@ class EditStructuralResultant(bpy.types.Operator, tool.Ifc.Operator, StructuralF
         activities = get_resultant_activities(self)
         for i, activity in enumerate(activities[:32]):
             tool.Structural.set_locks(activity, self.magnitude_locks[i], self.direction_locks[i])
+            tool.Structural.set_capacity(activity, self.capacities[i])
         write_activity_forces(forces)
         # Keep the resultant as locked, so that editing a force later solves the unknowns again to keep it.
         item, load_case = self.get_item_and_load_case()
         if item:
-            tool.Structural.set_resultant(item, load_case, self.magnitude_locked, self.direction_locked, resultant)
+            maximise = None
+            if self.maximise not in ("", "NONE") and int(self.maximise) <= len(activities):
+                maximise = activities[int(self.maximise) - 1].GlobalId
+            tool.Structural.set_resultant(
+                item, load_case, self.magnitude_locked, self.direction_locked, resultant, maximise
+            )
             tool.Structural.set_resultant_eighth(item, load_case, get_chosen_eighth(self, resultant))
         return {"FINISHED"}
 

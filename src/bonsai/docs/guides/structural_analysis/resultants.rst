@@ -48,6 +48,21 @@ dialog warns that a pull becomes a push.
 Loads that carry a factor in their load case, from a load group's coefficient or a factored
 assignment, are solved as drawn, times their factor, and their own values written back.
 
+The most a load can be
+----------------------
+
+A force can be given a **Capacity** in **Edit Resultant**, the most it may carry, as a cable's safe
+tension: 0 is no limit. With capacities set, **Make Largest** picks a force whose magnitude is unknown
+to make as large as they allow, a third unknown beyond the two the equations find.
+
+Each other unknown then grows with it in proportion. In a weight W hung from cables CA and CB, each
+good for 3 kN, CA = 0.825 W and CB = 0.397 W: CA allows W up to 3/0.825 = 3.63 kN and CB up to
+3/0.397 = 7.56 kN, so W = 3.63 kN, and CA, at its capacity, **governs**. The dialog names the force
+that governs; in the drawing its value is marked **= capacity**; and reports work it as above, each
+force as a multiple of W, each capacity over its multiple, and the least of them.
+
+It is kept as a resultant is: change a force's direction or a capacity, and it is found again.
+
 The resultant's angle
 ---------------------
 

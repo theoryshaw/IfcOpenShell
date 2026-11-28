@@ -588,6 +588,48 @@ class TestSolvingAtOneItemOnly(NewFile):
         assert shared_at_b.AppliedLoad == shared
         assert tool.Structural.get_force(shared) == pytest.approx((0.0, 0.0, 1.0))
 
+    def test_the_most_a_pair_of_cables_holds_is_kept_with_its_capacities(self):
+        from bonsai.bim.module.structural.load_decoration_data import ShaderInfo
+        from bonsai.bim.module.structural.operator import get_resolved_forces, write_activity_forces
+        from bonsai.bim.module.structural.report import get_capacity_steps
+
+        # Example 2.24 at C: CA on a 12:5 slope, CB on 3:4, each good for 3 kN, and W as large as they allow.
+        ifc = ifcopenshell.file(schema="IFC4")
+        tool.Ifc.set(ifc)
+        ifcopenshell.api.root.create_entity(ifc, ifc_class="IfcProject")
+        case = ifcopenshell.api.structural.add_structural_load_case(ifc, name="Case")
+        c = ifcopenshell.api.root.create_entity(ifc, ifc_class="IfcStructuralPointConnection", name="C")
+        activities = {}
+        for name, force in (("CA", (-5 / 13, 0.0, 12 / 13)), ("CB", (0.8, 0.0, 0.6)), ("W", (0.0, 0.0, -1.0))):
+            load = ifcopenshell.api.structural.add_structural_load(
+                ifc, name=name, ifc_class="IfcStructuralLoadSingleForce"
+            )
+            load.ForceX, load.ForceY, load.ForceZ = force
+            activities[name] = ifcopenshell.api.structural.add_structural_activity(
+                ifc, applied_load=load, structural_member=c, ifc_class="IfcStructuralPointAction"
+            )
+            tool.Structural.set_locks(activities[name], False, True)
+        ifcopenshell.api.group.assign_group(ifc, products=list(activities.values()), group=case)
+        tool.Structural.set_capacity(activities["CA"], 3.0)
+        tool.Structural.set_capacity(activities["CB"], 3.0)
+        tool.Structural.set_resultant(c, case, True, True, (0.0, 0.0, 0.0), activities["W"].GlobalId)
+        forces, error = get_resolved_forces(activities["W"])
+        assert not error
+        write_activity_forces(forces)
+        size = lambda name: math.hypot(*tool.Structural.get_force(activities[name].AppliedLoad))
+        assert (size("CA"), size("CB"), size("W")) == pytest.approx((3.0, 3.0 / 2.08, 3.6346), abs=1e-3)
+        # CA governs, as its label and the report say.
+        assert ShaderInfo().get_unknown_marks(activities["CA"].id())[0] == " 🔓 = capacity"
+        assert "capacity" not in ShaderInfo().get_unknown_marks(activities["CB"].id())[0]
+        steps = get_capacity_steps(
+            list(activities.values()), [{"symbol": f"F_{{{i}}}"} for i in (1, 2, 3)], "\\ \\text{kN}"
+        )
+        assert any("governs" in step and "3.63" in step for step in steps)
+        # A larger capacity for CA, and CB governs: W = (12/13 x 2.08 + 3/5) CB = 2.52 x 3 = 7.56.
+        tool.Structural.set_capacity(activities["CA"], 10.0)
+        write_activity_forces(get_resolved_forces(activities["W"])[0])
+        assert size("CB") == pytest.approx(3.0) and size("W") == pytest.approx(7.56, abs=1e-3)
+
     def test_a_load_used_once_is_changed_in_place(self):
         from bonsai.bim.module.structural.operator import get_resolved_forces, write_activity_forces
 

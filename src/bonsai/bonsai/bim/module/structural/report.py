@@ -633,6 +633,7 @@ def get_resultant_calculation(
         rows.append(get_table_row(force["symbol"], name, force["magnitude"], force["direction"], found, color))
         rows[-1]["magnitude"] += f" {unit}"
     solving, find = get_solving_steps(forces, text_unit, resultant_eighth)
+    solving += get_capacity_steps(activities, forces, text_unit)
     # Components first, then the unknowns found from them, then the resultant with what was found.
     found = {
         i: "MAGNITUDE" if force["locks"][1] else "WHOLE"
@@ -709,6 +710,65 @@ def get_resultant_calculation(
             else ""
         ),
     }
+
+
+def get_capacity_steps(
+    activities: list[ifcopenshell.entity_instance], forces: list[dict[str, Any]], text_unit: str
+) -> list[str]:
+    """How a force made as large as the capacities allow was found, if one was: each other force it changes as a
+    multiple of it, as the book finds CA = 2.08 CB, each capacity over its multiple, and the least of those"""
+    connects = activities[0].AssignedToStructuralItem if activities else None
+    load_case = tool.Structural.get_activity_load_case(activities[0]) if activities else None
+    if not connects or not load_case:
+        return []
+    resultant = tool.Structural.get_resultant(connects[0].RelatingElement, load_case) or {}
+    ids = [a.GlobalId for a in activities]
+    if resultant.get("Maximise") not in ids:
+        return []
+    k = ids.index(resultant["Maximise"])
+    loads = [tool.Structural.get_force(a.AppliedLoad) for a in activities]
+    locks = [tool.Structural.get_locks(a) for a in activities]
+    unit = lambda v: tuple(c / math.hypot(*v) for c in v) if math.hypot(*v) else None
+    if not (along := unit(loads[k])):
+        return []
+    solutions = []
+    for w in (0.0, 1.0):
+        trial, trial_locks = list(loads), list(locks)
+        trial[k], trial_locks[k] = tuple(w * c for c in along), (True, True)
+        solved, _, error = tool.Structural.solve_unknowns(
+            trial, trial_locks, tuple(resultant["Force"]), (resultant["MagnitudeLocked"], resultant["DirectionLocked"])
+        )
+        if error:
+            return []
+        solutions.append(solved)
+    symbol = forces[k]["symbol"]
+    steps = [Lead(f"\\text{{{symbol} as large as the capacities allow: each force found as a multiple of it,}}")]
+    bounds = []
+    for j, activity in enumerate(activities):
+        direction = unit(loads[j]) or (1.0, 0.0, 0.0)
+        a = sum(p * q for p, q in zip(solutions[0][j], direction))
+        b = sum(p * q for p, q in zip(solutions[1][j], direction)) - a
+        if j == k:
+            a, b = 0.0, 1.0
+        elif not all(locks[j]):
+            steps.append(
+                f"{forces[j]['symbol']} = " + (f"{a:.2f} + " if abs(a) > 1e-9 else "") + f"{b:.3f}\\, {symbol}"
+            )
+        if (capacity := tool.Structural.get_capacity(activity)) and abs(b) > 1e-12:
+            bound = (math.copysign(capacity, b) - a) / b
+            bounds.append((bound, j))
+            steps.append(
+                f"{forces[j]['symbol']} \\le {capacity:.2f}{text_unit} \\quad\\Rightarrow\\quad {symbol} \\le "
+                + (f"\\frac{{{capacity:.2f}}}{{{abs(b):.3f}}}" if j != k and not abs(a) > 1e-9 else f"{bound:.2f}")
+                + f" = {bound:.2f}{text_unit}"
+            )
+    if bounds:
+        bound, j = min(bounds)
+        steps.append(
+            f"\\text{{The least: }} {forces[j]['symbol']} \\text{{ reaches its capacity and governs, }} {symbol} = "
+            + bold(f"{bound:.2f}", True, text_unit)
+        )
+    return steps
 
 
 def get_tilted_steps(

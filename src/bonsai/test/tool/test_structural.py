@@ -136,6 +136,34 @@ class TestSolveTwoForceMagnitudes(NewFile):
         assert subject.solve_two_force_magnitudes((0, 10, 0), (1, 0, 0), (0, 0, 1)) is None
 
 
+class TestSolveMaximised(NewFile):
+    # Example 2.24: CA up on a 12:5 slope to the left, CB up on 3:4 to the right, W down, each cable good for 3.
+    forces = [(-5 / 13, 0, 12 / 13), (4 / 5, 0, 3 / 5), (0, 0, -1)]
+    locks = [(False, True), (False, True), (False, True)]
+
+    def test_the_most_two_cables_of_a_capacity_can_hold(self):
+        forces, resultant, error = subject.solve_maximised(
+            self.forces, self.locks, (0, 0, 0), (True, True), 2, [3.0, 3.0, None]
+        )
+        assert not error
+        # CA = 2.08 CB, so CA reaches 3 first: CB = 1.44 and W = 3.63.
+        assert [math.hypot(*f) for f in forces] == pytest.approx([3.0, 3.0 / 2.08, 3.6346], abs=1e-3)
+        assert resultant == (0, 0, 0)
+
+    def test_a_capacity_on_the_force_made_largest_bounds_it_too(self):
+        forces, _, error = subject.solve_maximised(self.forces, self.locks, (0, 0, 0), (True, True), 2, [3.0, 3.0, 2.0])
+        assert not error and math.hypot(*forces[2]) == pytest.approx(2.0)
+
+    def test_nothing_to_limit_it(self):
+        error = subject.solve_maximised(self.forces, self.locks, (0, 0, 0), (True, True), 2, [None, None, None])[2]
+        assert error.startswith("Nothing limits it")
+
+    def test_the_force_made_largest_needs_an_unknown_magnitude(self):
+        locks = [(False, True), (False, True), (True, True)]
+        error = subject.solve_maximised(self.forces, locks, (0, 0, 0), (True, True), 2, [3.0, 3.0, None])[2]
+        assert "magnitude unknown" in error
+
+
 class TestSolveUnknowns(NewFile):
     def test_two_force_magnitudes_for_a_known_resultant(self):
         forces, resultant, error = subject.solve_unknowns(
